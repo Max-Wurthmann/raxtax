@@ -76,6 +76,9 @@ pub fn raxtax<'a, 'b>(
                     if !exact_matches.iter().map(|&idx| tree.lineages[idx as usize].rsplit_once(',').unwrap().0).all_equal() {
                         warn!("Exact matches for {query_label} differ above the leafs of the lineage tree!");
                         warnings.store(true, Ordering::Relaxed);
+                    } else if !exact_matches.iter().map(|&idx| tree.lineages[idx as usize].clone()).all_equal() {
+                        warn!("Exact matches for {query_label} differ at the leafs of the lineage tree!");
+                        warnings.store(true, Ordering::Relaxed);
                     }
                 }
                 let tmr = timer!(Level::Debug; "K-mer Intersections");
