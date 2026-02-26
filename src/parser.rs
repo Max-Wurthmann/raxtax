@@ -82,11 +82,11 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
                         "Unexpected taxonomical annotation detected in label {label}"
                     ))?;
                     let lineage = caps
-                        .get(2)
+                        .get(1)
                         .context(format!("No taxonomic string found in label {label}"))?
                         .as_str()
                         .to_owned();
-                    let bin = caps.get(1).map(|bin| bin.as_str().to_owned());
+                    let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
                     labels.push((lineage, bin));
                     if !current_sequence.is_empty() {
                         sequences.push(current_sequence.clone());
