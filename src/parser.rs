@@ -49,7 +49,7 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
     if fasta_str.is_empty() {
         bail!("File is empty")
     }
-    let regex = Regex::new(r"([^|]+)*\|\S*tax=([^;]+);")?;
+    let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
     let (labels, sequences) = {
         let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
         let lines: Vec<String> = fasta_str
