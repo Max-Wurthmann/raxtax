@@ -122,7 +122,7 @@ pub fn raxtax<'a, 'b>(
             }).collect::<Result<Vec<()>>>()?;
 
     if warnings.load(Ordering::Relaxed) && log_enabled!(Level::Warn) {
-        eprintln!("\x1b[33m[WARN ]\x1b[0m Exact matches for some queries differ above the species level! Check the log file for more information!");
+        eprintln!("\x1b[33m[WARN ]\x1b[0m Exact matches for some queries have differnt taxonomic lineages! Check the log file for more information!");
     }
     Ok(())
 }
