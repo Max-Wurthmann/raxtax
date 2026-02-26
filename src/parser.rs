@@ -8,6 +8,8 @@ use std::{io::Read, path::PathBuf};
 
 use crate::{tree::Tree, utils};
 
+pub type LineageBinPair = (String, Option<String>);
+
 fn map_dna_char(ch: char) -> u8 {
     let a: u8 = 0b0001;
     let c: u8 = 0b0010;
@@ -47,7 +49,7 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
     if fasta_str.is_empty() {
         bail!("File is empty")
     }
-    let regex = Regex::new(r"tax=([^;]+);")?;
+    let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
     let (labels, sequences) = {
         let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
         let lines: Vec<String> = fasta_str
@@ -58,9 +60,10 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
         if !lines[0].starts_with('>') {
             bail!("Not a valid FASTA file")
         }
-        let mut labels: Vec<String> = Vec::new();
+        let mut labels: Vec<LineageBinPair> = Vec::new();
         let mut sequences: Vec<Vec<u8>> = Vec::new();
         let mut current_sequence = Vec::<u8>::new();
+        // let mut bin_id_to_lineages: HashMap<String, Vec<String>> = HashMap::new();
 
         // create label and sequence vectors
         lines
@@ -75,16 +78,16 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
             .with_message("Parsing Reference...")
             .map(|line| -> Result<()> {
                 if let Some(label) = line.strip_prefix('>') {
-                    let lineage = regex
-                        .captures(label)
-                        .context(format!(
-                            "Unexpected taxonomical annotation detected in label {label}"
-                        ))?
+                    let caps = regex.captures(label).context(format!(
+                        "Unexpected taxonomical annotation detected in label {label}"
+                    ))?;
+                    let lineage = caps
                         .get(1)
                         .context(format!("No taxonomic string found in label {label}"))?
                         .as_str()
                         .to_owned();
-                    labels.push(lineage);
+                    let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
+                    labels.push((lineage, bin));
                     if !current_sequence.is_empty() {
                         sequences.push(current_sequence.clone());
                         current_sequence = Vec::new();

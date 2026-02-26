@@ -46,6 +46,7 @@ Options:
   -i, --query-file <QUERY_FILE>        Path to the query file
       --skip-exact-matches             If used for mislabling analysis, you want to skip exact sequence matches
       --tsv                            Output primary result file in tsv format
+      --binning                        Output best taxonomic bin for each query
       --only-db                        Create binary database and exit
       --skip-db                        Don't create the binary database for the reference sequences
   -c, --clean                          Remove binary database and checkpoint files after a successful run
