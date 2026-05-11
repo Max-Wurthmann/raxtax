@@ -93,7 +93,7 @@ impl<'a, 'b> Lineage<'a, 'b> {
         let leaf_confidence = utils::euclidean_norm(
             self.confidence_values
                 .iter()
-                .map(|&v| (v - 1.0 / self.tree.num_tips as f64)),
+                .map(|&v| v - 1.0 / self.tree.num_tips as f64),
         );
         let mut best_bin_idx = None;
         let results = self
