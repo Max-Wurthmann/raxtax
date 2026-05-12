@@ -31,7 +31,7 @@ fn check_lineage_size(db_size: usize) {
 }
 
 #[cfg(feature = "huge_db")]
-fn check_lineage_size() {}
+fn check_lineage_size(_: usize) {}
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Tree {
