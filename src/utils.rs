@@ -24,7 +24,28 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
     }
 }
 
-pub fn sequence_to_kmers(sequence: &[u8]) -> Vec<u16> {
+pub fn seq_to_canonical_kmers(sequence: &[u8]) -> Vec<u16> {
+    let mut k_mers = HashSet::new();
+    sequence.windows(8).for_each(|vals| {
+        let mut kmer = 0_u16;
+        let mut rev_compl_kmer = 0_u16;
+        for (i, byte) in vals.iter().enumerate() {
+            if let Some(repr) = map_four_to_two_bit_repr(*byte) {
+                kmer |= repr << (14 - i * 2);
+                let complement_repr = repr ^ 0b11; // A <-> T and C <-> G
+                rev_compl_kmer |= complement_repr << (i * 2);
+            } else {
+                // invalid char, skip this k-mer
+                return;
+            }
+        }
+        let canonical_kmer = std::cmp::min(kmer, rev_compl_kmer);
+        k_mers.insert(canonical_kmer);
+    });
+    k_mers.into_iter().sorted().collect_vec()
+}
+
+pub fn seq_to_kmers(sequence: &[u8]) -> Vec<u16> {
     let mut k_mers = HashSet::new();
     sequence.windows(8).for_each(|vals| {
         if let Some(k_mer) = vals
@@ -210,7 +231,7 @@ mod tests {
 
     use crate::utils::{cosine_similarity, euclidean_distance_l1, euclidean_norm};
 
-    use super::{decompress_sequence, map_four_to_two_bit_repr, sequence_to_kmers};
+    use super::{decompress_sequence, map_four_to_two_bit_repr, seq_to_kmers};
 
     #[test]
     fn test_euclidean_norm() {
@@ -252,7 +273,7 @@ mod tests {
     #[test]
     fn test_sequence_to_kmers() {
         let sequence = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
-        let kmers = sequence_to_kmers(&sequence);
+        let kmers = seq_to_kmers(&sequence);
         assert!(kmers.windows(2).all(|w| w[0] <= w[1]));
         assert_equal(
             kmers,
