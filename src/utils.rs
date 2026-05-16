@@ -229,7 +229,9 @@ mod tests {
     use itertools::assert_equal;
     use statrs::assert_almost_eq;
 
-    use crate::utils::{cosine_similarity, euclidean_distance_l1, euclidean_norm};
+    use crate::utils::{
+        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_canonical_kmers,
+    };
 
     use super::{decompress_sequence, map_four_to_two_bit_repr, seq_to_kmers};
 
@@ -271,7 +273,27 @@ mod tests {
     }
 
     #[test]
-    fn test_sequence_to_kmers() {
+    fn test_seq_to_canonical_kmers() {
+        let sequence = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
+        let kmers = seq_to_canonical_kmers(&sequence);
+        assert!(kmers.windows(2).all(|w| w[0] <= w[1]));
+        assert_equal(
+            kmers,
+            vec![
+                0b0001_0010_1101_1110,
+                0b0001_1101_0010_0001,
+                0b0010_0001_1101_0010,
+                0b0010_1101_1110_0010,
+                0b0100_1000_0111_0100,
+                0b0100_1011_0111_1000,
+                0b1000_0111_0100_1000,
+                0b1000_1011_0111_1000,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_seq_to_kmers() {
         let sequence = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
         let kmers = seq_to_kmers(&sequence);
         assert!(kmers.windows(2).all(|w| w[0] <= w[1]));
