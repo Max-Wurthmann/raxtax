@@ -16,10 +16,10 @@ pub const F64_OUTPUT_ACCURACY: u32 = 2;
 
 pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
     match c {
-        0b0001 => Some(0b00),
-        0b0010 => Some(0b01),
-        0b0100 => Some(0b10),
-        0b1000 => Some(0b11),
+        0b0001 => Some(0b00), // A
+        0b0010 => Some(0b01), // C
+        0b0100 => Some(0b10), // G
+        0b1000 => Some(0b11), // T
         _ => None,
     }
 }

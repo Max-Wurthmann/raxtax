@@ -59,11 +59,15 @@ pub fn raxtax<'a, 'b>(
             .progress_chars("##-"),
         )
         .with_message("Running Queries...");
+
     pb.enable_steady_tick(Duration::from_millis(100));
     queries
         .par_chunks(chunk_size)
         .flat_map(|q| {
+
+            // for a current query, stores itersectionsize (as u16) with each reference sequence
             let mut intersect_buffer: Vec<u16> = vec![0; tree.num_tips];
+
             q.iter().map(|(query_label, query_sequence)| {
                 pb.inc(1);
                 intersect_buffer.fill(0);

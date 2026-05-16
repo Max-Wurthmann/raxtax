@@ -39,7 +39,10 @@ pub struct Tree {
     pub lineages: Vec<String>,
     pub bins: Vec<String>,
     pub sequences: HashMap<Vec<u8>, Vec<IndexType>>,
+
+    // for each k-mer (outer idx), the vector of seqneces (sequenceIDs) containing it
     pub k_mer_map: Vec<Vec<IndexType>>,
+
     pub bin_idx_to_lineage_idxs: Vec<Vec<usize>>,
     pub lineage_idx_to_bin_idx: Vec<Option<usize>>,
     pub num_tips: usize,
