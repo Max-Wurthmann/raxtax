@@ -274,46 +274,72 @@ mod tests {
 
     #[test]
     fn test_seq_to_canonical_kmers() {
-        let seq = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
-        let rev_compl_seq = vec![2, 8, 2, 1, 4, 1, 2, 8, 2, 1, 4, 1, 2, 8, 4, 8];
-        let out1 = seq_to_canonical_kmers(&seq);
-        let out2 = seq_to_canonical_kmers(&rev_compl_seq);
-        for out in [out1, out2] {
-            assert!(out.windows(2).all(|w| w[0] <= w[1]));
-            assert_equal(
-                out,
-                vec![
-                    0b0001_0010_1101_1110,
-                    0b0001_1101_0010_0001,
-                    0b0010_0001_1101_0010,
-                    0b0010_1101_1110_0010,
-                    0b0100_1000_0111_0100,
-                    0b0100_1011_0111_1000,
-                    0b1000_0111_0100_1000,
-                    0b1000_1011_0111_1000,
-                ],
-            );
-        }
+        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
+            let output = seq_to_canonical_kmers(input_seq);
+            assert!(output.windows(2).all(|w| w[0] <= w[1]));
+            assert_equal(output, kmers_expected);
+        };
+
+        // no invalid chars
+        let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
+        let expected1 = vec![
+            0b0001_0010_1101_1110,
+            0b0001_1101_0010_0001,
+            0b0010_0001_1101_0010,
+            0b0010_1101_1110_0010,
+            0b0100_1000_0111_0100,
+            0b0100_1011_0111_1000,
+            0b1000_0111_0100_1000,
+            0b1000_1011_0111_1000,
+        ];
+        let expected2 = expected1.clone();
+        check_output(&seq1, expected1);
+
+        // seq2 has invalid chars at front and end
+        let seq2 = vec![
+            12, 13, 1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4, 17, 3,
+        ];
+        // expected2 is same as expected1
+        check_output(&seq2, expected2);
+
+        let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
+        let expected3 = vec![0b0000_0101_1010_1111];
+        check_output(&seq3, expected3);
     }
 
     #[test]
     fn test_seq_to_kmers() {
-        let sequence = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
-        let kmers = seq_to_kmers(&sequence);
-        assert!(kmers.windows(2).all(|w| w[0] <= w[1]));
-        assert_equal(
-            kmers,
-            vec![
-                0b0001_0010_1101_1110,
-                0b0010_1101_1110_0010,
-                0b0100_1011_0111_1000,
-                0b0111_1000_1011_0111,
-                0b1000_1011_0111_1000,
-                0b1011_0111_1000_1011,
-                0b1101_1110_0010_1101,
-                0b1110_0010_1101_1110,
-            ],
-        );
+        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
+            let output = seq_to_kmers(input_seq);
+            assert!(output.windows(2).all(|w| w[0] <= w[1]));
+            assert_equal(output, kmers_expected);
+        };
+
+        // no invalid chars
+        let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
+        let expected1: Vec<u16> = vec![
+            0b0001_0010_1101_1110,
+            0b0010_1101_1110_0010,
+            0b0100_1011_0111_1000,
+            0b0111_1000_1011_0111,
+            0b1000_1011_0111_1000,
+            0b1011_0111_1000_1011,
+            0b1101_1110_0010_1101,
+            0b1110_0010_1101_1110,
+        ];
+        let expected2 = expected1.clone();
+        check_output(&seq1, expected1);
+
+        // seq2 has invalid chars at front and end
+        let seq2 = vec![
+            12, 13, 1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4, 17, 3,
+        ];
+        // expected2 is same as expected1
+        check_output(&seq2, expected2);
+
+        let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
+        let expected3 = vec![0b0000_0101_1010_1111];
+        check_output(&seq3, expected3);
     }
 
     #[test]
