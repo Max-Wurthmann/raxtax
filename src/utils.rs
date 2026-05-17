@@ -24,6 +24,9 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
     }
 }
 
+/// Extracts canonical 8-mers from the given sequence.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
 pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
     let mut seq_iter = sequence.iter();
     let mut kmer = 0_u16;
@@ -59,7 +62,11 @@ pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + us
     })
 }
 
-pub fn seq_to_canonical_kmers(sequence: &[u8]) -> Vec<u16> {
+/// Extracts all canonical 8-mers from the given sequence.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// The resulting k-mers are sorted and unique.
+pub fn seq_to_unique_canon_kmers(sequence: &[u8]) -> Vec<u16> {
+    // maybe replace with a bitset or bitvec
     let mut k_mers = HashSet::new();
     seq_to_canon_kmer_iter(sequence).for_each(|canonical_kmer| {
         k_mers.insert(canonical_kmer);
@@ -252,7 +259,7 @@ mod tests {
     use statrs::assert_almost_eq;
 
     use crate::utils::{
-        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_canonical_kmers,
+        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_kmers,
     };
 
     use super::{decompress_sequence, map_four_to_two_bit_repr, seq_to_kmers};
@@ -295,9 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn test_seq_to_canonical_kmers() {
+    fn test_seq_to_unique_canon_kmers() {
         let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
-            let output = seq_to_canonical_kmers(input_seq);
+            let output = seq_to_unique_canon_kmers(input_seq);
             assert!(output.windows(2).all(|w| w[0] <= w[1]));
             assert_equal(output, kmers_expected);
         };
