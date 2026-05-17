@@ -24,22 +24,44 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
     }
 }
 
-pub fn seq_to_canonical_kmers(sequence: &[u8]) -> Vec<u16> {
-    let mut k_mers = HashSet::new();
-    sequence.windows(8).for_each(|vals| {
-        let mut kmer = 0_u16;
-        let mut rev_compl_kmer = 0_u16;
-        for (i, byte) in vals.iter().enumerate() {
-            if let Some(repr) = map_four_to_two_bit_repr(*byte) {
-                kmer |= repr << (14 - i * 2);
-                let complement_repr = repr ^ 0b11; // A <-> T and C <-> G
-                rev_compl_kmer |= complement_repr << (i * 2);
+pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
+    let mut seq_iter = sequence.iter();
+    let mut kmer = 0_u16;
+    let mut rev_compl_kmer = 0_u16;
+    let mut filled_bases = 0_u32; // Tracks how many consecutive valid bases we have processed
+
+    std::iter::from_fn(move || {
+        while let Some(char) = seq_iter.next() {
+            if let Some(repr) = map_four_to_two_bit_repr(*char) {
+                // Add repr to the end of kmer
+                kmer = (kmer << 2) | repr;
+
+                // A <-> T and C <-> G
+                let complement_repr = repr ^ 0b11;
+                // Add complement_repr to the start of rev_compl_kmer
+                rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << 14);
+
+                filled_bases += 1;
+                if filled_bases >= 8 {
+                    // Only yield a valid 8-mer once our sliding window has 8 consecutive valid bases
+                    return Some(std::cmp::min(kmer, rev_compl_kmer));
+                }
             } else {
-                // invalid char, skip this k-mer
-                return;
+                // Invalid/ambiguous char encountered
+                // We completely flush and reset our window state.
+                kmer = 0;
+                rev_compl_kmer = 0;
+                filled_bases = 0;
             }
         }
-        let canonical_kmer = std::cmp::min(kmer, rev_compl_kmer);
+        // No more characters left in the sequence
+        None
+    })
+}
+
+pub fn seq_to_canonical_kmers(sequence: &[u8]) -> Vec<u16> {
+    let mut k_mers = HashSet::new();
+    seq_to_canon_kmer_iter(sequence).for_each(|canonical_kmer| {
         k_mers.insert(canonical_kmer);
     });
     k_mers.into_iter().sorted().collect_vec()
