@@ -29,6 +29,7 @@ cargo install raxtax
 To install from source (with maximum performance):
 ```sh
 git clone https://github.com/noahares/raxtax.git
+cd raxtax
 cargo build --profile=ultra
 ```
 
@@ -135,7 +136,7 @@ With `-vv` debug messages are also included.
 Generally, if a warning or error occurs, the program will inform you through `stderr` and refer you to the log file if needed.
 This file also contains information about exact matches and inconsistent lineages (possible mislabeling).
 
-4. (_optional_ via `--tsv`) `<PREFIX>/raxtax.tsv` is pretty much the same as the first output file but slightly more convenient for viewing in your favorite spreadsheet editor.
+3. (_optional_ via `--tsv`) `<PREFIX>/raxtax.tsv` is pretty much the same as the first output file but slightly more convenient for viewing in your favorite spreadsheet editor.
 In this file, the taxonomic lineage and confidence values are interleaved, and the query sequence is also printed at the end:
 
 ```sh
