@@ -15,7 +15,7 @@ use crate::lineage;
 
 pub const F64_OUTPUT_ACCURACY: u32 = 2;
 
-pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
+pub fn map_four_to_two_bit_repr(c: u8) -> Option<u8> {
     match c {
         0b0001 => Some(0b00), // A
         0b0010 => Some(0b01), // C
@@ -23,6 +23,72 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
         0b1000 => Some(0b11), // T
         _ => None,
     }
+}
+
+pub struct BitMasks {
+    k: u8,
+    unused_bits_mask: u32,
+}
+
+impl BitMasks {
+    pub fn new(k: u32) -> Option<Self> {
+        if k < 1 || k > 16 || k % 2 == 0 {
+            return None;
+        }
+
+        Some(Self {
+            k: k as u8,
+            unused_bits_mask: u32::MAX >> (32 - 2 * k),
+        })
+    }
+}
+
+/// Extracts canonical k-mers from the given sequence.
+/// where k is odd and 1 <= k <= 16.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// Canonical k-mers are encoded using a minimal encoding scheme and are thus in the range [0, 1/2 * 4^k).
+/// (see Wittler R. General encoding of canonical k-mers. Peer Community Journal. 2023)
+/// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
+pub fn seq_to_minenc_canon_kmer_iter(
+    sequence: &[u8],
+    bitmasks: BitMasks,
+) -> impl Iterator<Item = u32> + use<'_> {
+    let mut seq_iter = sequence.iter();
+    let mut kmer = 0_u32;
+    let mut rev_compl_kmer = 0_u32;
+    let mut filled_bases = 0_u8; // Tracks how many consecutive valid bases we have processed
+
+    std::iter::from_fn(move || {
+        while let Some(char) = seq_iter.next() {
+            if let Some(repr) = map_four_to_two_bit_repr(*char) {
+                // Add repr to the end of kmer
+                kmer = (kmer << 2) | repr as u32;
+                // Clear any bits that exceed our k-mer size
+                kmer &= bitmasks.unused_bits_mask;
+
+                // A <-> T and C <-> G
+                let complement_repr = repr as u32 ^ 0b11;
+                // Add complement_repr to the start of rev_compl_kmer
+                rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << (bitmasks.k * 2 - 2));
+
+                let common_prefix_length = (kmer ^ rev_compl_kmer).leading_zeros();
+
+                filled_bases += 1;
+                if filled_bases >= bitmasks.k {
+                    // Only yield a valid k-mer once our sliding window has 8 consecutive valid bases
+                    return Some(std::cmp::min(kmer, rev_compl_kmer));
+                }
+            } else {
+                // Invalid/ambiguous char encountered
+                // We completely flush and reset our window state.
+                kmer = 0;
+                rev_compl_kmer = 0;
+                filled_bases = 0;
+            }
+        }
+        // No more characters left in the sequence
+        None
+    })
 }
 
 /// Extracts canonical 8-mers from the given sequence.
@@ -38,10 +104,10 @@ pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + us
         while let Some(char) = seq_iter.next() {
             if let Some(repr) = map_four_to_two_bit_repr(*char) {
                 // Add repr to the end of kmer
-                kmer = (kmer << 2) | repr;
+                kmer = (kmer << 2) | repr as u16;
 
                 // A <-> T and C <-> G
-                let complement_repr = repr ^ 0b11;
+                let complement_repr = repr as u16 ^ 0b11;
                 // Add complement_repr to the start of rev_compl_kmer
                 rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << 14);
 
@@ -81,7 +147,7 @@ pub fn seq_to_kmers(sequence: &[u8]) -> Vec<u16> {
         if let Some(k_mer) = vals
             .iter()
             .enumerate()
-            .map(|(j, v)| map_four_to_two_bit_repr(*v).map(|c| c << (14 - j * 2)))
+            .map(|(j, v)| map_four_to_two_bit_repr(*v).map(|c| (c as u16) << (14 - j * 2)))
             .fold_options(0_u16, |acc, c| acc | c)
         {
             k_mers.insert(k_mer);
