@@ -13,7 +13,7 @@ use logging_timer::time;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{parser::LineageBinPair, utils::map_four_to_two_bit_repr};
+use crate::{parser::LineageBinPair, utils::seq_to_canon_kmer_iter};
 
 #[cfg(feature = "huge_db")]
 type IndexType = usize;
@@ -117,16 +117,9 @@ impl Tree {
                     .unwrap()
                     .push(idx as IndexType);
 
-                sequence.windows(8).for_each(|vals| {
-                    if let Some(k_mer) = vals
-                        .iter()
-                        .enumerate()
-                        .map(|(j, v)| map_four_to_two_bit_repr(*v).map(|c| c << (14 - j * 2)))
-                        .fold_options(0_u16, |acc, c| acc | c)
-                    {
-                        k_mer_map[k_mer as usize].push(idx as IndexType);
-                    }
-                });
+                for k_mer in seq_to_canon_kmer_iter(sequence) {
+                    k_mer_map[k_mer as usize].push(idx as IndexType);
+                }
                 Ok(())
             })
             .collect::<Result<Vec<()>>>()?;

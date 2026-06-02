@@ -180,6 +180,7 @@ ATACGCTTTGCGT
 GTGCGCTATGCGA
 >Badabing|Badabum;tax=p:Phylum2,c:Class3,o:Order3,f:Family4,g:Genus4,s:Species5;
 ATACGCTTTGCGT";
+
         let tree = parse_reference_fasta_str(fasta_str).unwrap();
         for (k, v) in tree.k_mer_map.iter().enumerate() {
             if !v.is_empty() {
@@ -187,20 +188,20 @@ ATACGCTTTGCGT";
             }
         }
         assert_eq!(
-            tree.k_mer_map[0b1_0101_1111_1110_usize]
+            tree.k_mer_map[0b0001_0101_1111_1110_usize]
                 .iter()
                 .collect_vec(),
             &[&0]
         );
         assert_eq!(
-            tree.k_mer_map[0b11_0001_1001_1111_usize]
+            tree.k_mer_map[0b0000_1001_1011_0011_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&1, &4, &5]
         );
         assert_eq!(
-            tree.k_mer_map[0b110_0111_0011_1010_usize]
+            tree.k_mer_map[0b0101_0011_0010_0110_usize]
                 .iter()
                 .collect_vec(),
             &[&3]
@@ -247,6 +248,14 @@ TTTAAAACC
 TTTAAAACA
 >Badabing|Badabum;tax=p:Phylum1,c:Class2,o:Order2,f:Family2,g:Genus3,s:Species4;
 AAACCCCGG";
+        /* reverse complements:
+         * 0: AAACCCCGT -> ACGGGGTTT
+         * 1: TAACCCCGG -> CCGGGGTTA
+         * 2: TTTAAAACC -> GGTTTTAAA
+         * 3: TTTAAAACA -> TGTTTTAAA
+         * 4: AAACCCCGG -> CCGGGGTTT
+         */
+
         let Tree { k_mer_map, .. } = parse_reference_fasta_str(fasta_str).unwrap();
         for (k, v) in k_mer_map.iter().enumerate() {
             if !v.is_empty() {
@@ -254,17 +263,23 @@ AAACCCCGG";
             }
         }
         assert_eq!(
-            k_mer_map[0b1_0101_0110_usize].iter().sorted().collect_vec(),
+            // AAACCCCG
+            k_mer_map[0b01_0101_0110_usize]
+                .iter()
+                .sorted()
+                .collect_vec(),
             &[&0, &4]
         );
         assert_eq!(
-            k_mer_map[0b101_0101_1010_usize]
+            // AACCCCGG
+            k_mer_map[0b0101_0101_1010_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&1, &4]
         );
         assert_eq!(
+            // AACCCCGT
             k_mer_map[0b101_0101_1011_usize]
                 .iter()
                 .sorted()
@@ -272,28 +287,32 @@ AAACCCCGG";
             &[&0]
         );
         assert_eq!(
-            k_mer_map[0b1100_0001_0101_0110_usize]
+            // CGGGGTTA
+            k_mer_map[0b0110_1010_1011_1100_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&1]
         );
         assert_eq!(
-            k_mer_map[0b1111_0000_0000_0101_usize]
+            // GGTTTTAA
+            k_mer_map[0b1010_1111_1111_0000_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&2]
         );
+        // GGTTTTAA
         assert_eq!(
-            k_mer_map[0b1111_0000_0000_0101_usize]
+            k_mer_map[0b1010_1111_1111_0000_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&2]
         );
+        // GTTTTAAA
         assert_eq!(
-            k_mer_map[0b1111_1100_0000_0001_usize]
+            k_mer_map[0b1011_1111_1100_0000_usize]
                 .iter()
                 .sorted()
                 .collect_vec(),

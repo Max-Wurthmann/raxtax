@@ -24,7 +24,57 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u16> {
     }
 }
 
-pub fn sequence_to_kmers(sequence: &[u8]) -> Vec<u16> {
+/// Extracts canonical 8-mers from the given sequence.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
+pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
+    let mut seq_iter = sequence.iter();
+    let mut kmer = 0_u16;
+    let mut rev_compl_kmer = 0_u16;
+    let mut filled_bases = 0_u32; // Tracks how many consecutive valid bases we have processed
+
+    std::iter::from_fn(move || {
+        while let Some(char) = seq_iter.next() {
+            if let Some(repr) = map_four_to_two_bit_repr(*char) {
+                // Add repr to the end of kmer
+                kmer = (kmer << 2) | repr;
+
+                // A <-> T and C <-> G
+                let complement_repr = repr ^ 0b11;
+                // Add complement_repr to the start of rev_compl_kmer
+                rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << 14);
+
+                filled_bases += 1;
+                if filled_bases >= 8 {
+                    // Only yield a valid 8-mer once our sliding window has 8 consecutive valid bases
+                    return Some(std::cmp::min(kmer, rev_compl_kmer));
+                }
+            } else {
+                // Invalid/ambiguous char encountered
+                // We completely flush and reset our window state.
+                kmer = 0;
+                rev_compl_kmer = 0;
+                filled_bases = 0;
+            }
+        }
+        // No more characters left in the sequence
+        None
+    })
+}
+
+/// Extracts all canonical 8-mers from the given sequence.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// The resulting k-mers are sorted and unique.
+pub fn seq_to_unique_canon_kmers(sequence: &[u8]) -> Vec<u16> {
+    // maybe replace with a bitset or bitvec
+    let mut k_mers = HashSet::new();
+    seq_to_canon_kmer_iter(sequence).for_each(|canonical_kmer| {
+        k_mers.insert(canonical_kmer);
+    });
+    k_mers.into_iter().sorted().collect_vec()
+}
+
+pub fn seq_to_kmers(sequence: &[u8]) -> Vec<u16> {
     let mut k_mers = HashSet::new();
     sequence.windows(8).for_each(|vals| {
         if let Some(k_mer) = vals
@@ -208,9 +258,11 @@ mod tests {
     use itertools::assert_equal;
     use statrs::assert_almost_eq;
 
-    use crate::utils::{cosine_similarity, euclidean_distance_l1, euclidean_norm};
+    use crate::utils::{
+        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_kmers,
+    };
 
-    use super::{decompress_sequence, map_four_to_two_bit_repr, sequence_to_kmers};
+    use super::{decompress_sequence, map_four_to_two_bit_repr, seq_to_kmers};
 
     #[test]
     fn test_euclidean_norm() {
@@ -250,23 +302,73 @@ mod tests {
     }
 
     #[test]
-    fn test_sequence_to_kmers() {
-        let sequence = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
-        let kmers = sequence_to_kmers(&sequence);
-        assert!(kmers.windows(2).all(|w| w[0] <= w[1]));
-        assert_equal(
-            kmers,
-            vec![
-                0b0001_0010_1101_1110,
-                0b0010_1101_1110_0010,
-                0b0100_1011_0111_1000,
-                0b0111_1000_1011_0111,
-                0b1000_1011_0111_1000,
-                0b1011_0111_1000_1011,
-                0b1101_1110_0010_1101,
-                0b1110_0010_1101_1110,
-            ],
-        );
+    fn test_seq_to_unique_canon_kmers() {
+        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
+            let output = seq_to_unique_canon_kmers(input_seq);
+            assert!(output.windows(2).all(|w| w[0] <= w[1]));
+            assert_equal(output, kmers_expected);
+        };
+
+        // no invalid chars
+        let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
+        let expected1 = vec![
+            0b0001_0010_1101_1110,
+            0b0001_1101_0010_0001,
+            0b0010_0001_1101_0010,
+            0b0010_1101_1110_0010,
+            0b0100_1000_0111_0100,
+            0b0100_1011_0111_1000,
+            0b1000_0111_0100_1000,
+            0b1000_1011_0111_1000,
+        ];
+        let expected2 = expected1.clone();
+        check_output(&seq1, expected1);
+
+        // seq2 has invalid chars at front and end
+        let seq2 = vec![
+            12, 13, 1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4, 17, 3,
+        ];
+        // expected2 is same as expected1
+        check_output(&seq2, expected2);
+
+        let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
+        let expected3 = vec![0b0000_0101_1010_1111];
+        check_output(&seq3, expected3);
+    }
+
+    #[test]
+    fn test_seq_to_kmers() {
+        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
+            let output = seq_to_kmers(input_seq);
+            assert!(output.windows(2).all(|w| w[0] <= w[1]));
+            assert_equal(output, kmers_expected);
+        };
+
+        // no invalid chars
+        let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
+        let expected1: Vec<u16> = vec![
+            0b0001_0010_1101_1110,
+            0b0010_1101_1110_0010,
+            0b0100_1011_0111_1000,
+            0b0111_1000_1011_0111,
+            0b1000_1011_0111_1000,
+            0b1011_0111_1000_1011,
+            0b1101_1110_0010_1101,
+            0b1110_0010_1101_1110,
+        ];
+        let expected2 = expected1.clone();
+        check_output(&seq1, expected1);
+
+        // seq2 has invalid chars at front and end
+        let seq2 = vec![
+            12, 13, 1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4, 17, 3,
+        ];
+        // expected2 is same as expected1
+        check_output(&seq2, expected2);
+
+        let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
+        let expected3 = vec![0b0000_0101_1010_1111];
+        check_output(&seq3, expected3);
     }
 
     #[test]
