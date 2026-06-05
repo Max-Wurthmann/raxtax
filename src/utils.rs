@@ -26,45 +26,145 @@ pub fn map_four_to_two_bit_repr(c: u8) -> Option<u8> {
     }
 }
 
-pub struct BitMasks {
+// replace patterns for specifieng pair
+const REPLACE: [u8; 16] = [
+    0x06, 0x05, 0x04, 0x00, 0x08, 0x07, 0x00, 0x04, 0x09, 0x00, 0x07, 0x05, 0x00, 0x09, 0x08, 0x06,
+];
+// Markers to check if we need to encode the forward or the reverse complement.
+const REVERSE: [bool; 16] = [
+    false, false, false, false, false, false, false, true, false, false, true, true, false, true,
+    true, true,
+];
+
+pub struct KMerEncodingData {
     k: u8,
     unused_bits_mask: u32,
+    four_to_the_k_half_plus_one: u32,
+    twice_four_to_the_k_half: u32,
+    remaindermasks: [u32; 18],
 }
 
-impl BitMasks {
+impl KMerEncodingData {
     pub fn new(k: u32) -> Option<Self> {
-        if (1..=16).step_by(2).contains(&k) {
+        if (1..=15).step_by(2).contains(&k) {
             return None;
+        }
+
+        // size 18 as k + 2 is largest index we need
+        // k <= 15 implies k + 2 < 18
+        // adjust to support even k
+        let mut remaindermasks = [0u32; 18];
+
+        remaindermasks[0] = u32::MAX;
+        for i in 1..=k {
+            let zero_shift = 32 - 2 * k + i;
+            let zeromask = u32::MAX >> zero_shift;
+            let onemask = u32::MAX << i;
+            remaindermasks[i as usize] = zeromask & onemask;
         }
 
         Some(Self {
             k: k as u8,
             unused_bits_mask: u32::MAX >> (32 - 2 * k),
+            four_to_the_k_half_plus_one: 4u32.pow((k / 2) + 1),
+            twice_four_to_the_k_half: 2 * 4u32.pow(k / 2),
+            remaindermasks,
         })
     }
 }
 
-fn encode(kmer: u32, rev_compl_kmer: u32, bitmasks: &BitMasks) -> u32 {
-    let k = bitmasks.k;
-    let common_prefix_length = (kmer ^ rev_compl_kmer).leading_zeros();
-    let mut code = 0u32;
-
-    if common_prefix_length < k as u32 - 1 {
-        // specifieing pair
-
-        // TODO:
-        unimplemented!()
-    } else if common_prefix_length == k as u32 - 1 {
-        // only differs in middle char
-
-        // TODO:
-        unimplemented!()
-    } else {
+/// Encodes the canonical k-mer specified by the given k-mer and its reverse complement
+/// Uses the encoding scheme described in
+/// (Wittler R. General encoding of canonical k-mers. Peer Community Journal. 2023.0)
+fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u32 {
+    let k = encoding_data.k;
+    // number of common bits rounded down to nearest even number
+    let common_prefix_length = ((kmer ^ rev_compl_kmer).leading_zeros() / 2 * 2) as u8;
+    let mut kmer_code = if common_prefix_length > k {
         debug_assert!(false, "palindrome can not occur with odd k");
         unsafe { unreachable_unchecked() };
+    } else if common_prefix_length < k - 1 {
+        // specifieing pair
+
+        // determine which k-mer is lexicographically smaller
+        // via a lookup of the specifieng pair
+        let mut pattern = 0u8;
+        pattern |= (kmer >> (2 * k - common_prefix_length - 4)) as u8 & 0x0C;
+        pattern |= (kmer >> common_prefix_length) as u8 & 0x03;
+
+        debug_assert!(pattern < 16);
+
+        let mut kmer_code = if REVERSE[pattern as usize] {
+            encode_prime(rev_compl_kmer, common_prefix_length, encoding_data)
+        } else {
+            encode_prime(kmer, common_prefix_length, encoding_data)
+        };
+
+        // insert replace pattern
+        kmer_code |= (REPLACE[pattern as usize] as u32) << (2 * k - common_prefix_length - 4);
+        kmer_code
+    } else {
+        // common_prefix_length == k - 1 as
+        // - !common_prefix_length < k - 1 and
+        // - !common_prefix_length > k and
+        // - k is odd and
+        // - common_prefix_length is even
+        debug_assert!(common_prefix_length == k - 1);
+
+        // only differs in middle char
+        // look at two bits of middle char, located at positions k and k-1 (0-indexed from the right)
+        // Use these bits to encode A/T -> 0 and C/G -> 1:
+        let mut kmer_code = encode_prime(kmer, common_prefix_length, encoding_data);
+
+        let bit1 = (kmer & (1 << k)) >> 1;
+        let bit2 = kmer & (1 << (k - 1));
+
+        kmer_code |= bit1 ^ bit2;
+        kmer_code
+    };
+
+    // subtract gaps
+    // 2*(k//2-common_prefix_length-1) ones followed by k-2 zeros
+    if common_prefix_length <= k - 4 {
+        let gaps = u32::MAX >> (32 - (k / 2 * 2 - common_prefix_length - 2));
+
+        // use k - 1 if k is even
+        // currently only odd k are supported
+        // adjust to support even k
+        kmer_code -= gaps << k;
     }
 
-    code
+    // subtract gap in code due to specifying middle position
+    // only applies if k is odd
+    // add check to support even k
+    if kmer_code >= encoding_data.four_to_the_k_half_plus_one {
+        kmer_code -= encoding_data.twice_four_to_the_k_half;
+    }
+
+    kmer_code
+}
+
+/// encodes a given canonical k-mer which has the given common prefix length with its reverse complement
+/// does not subtract gaps
+/// is used as a subroutine of `encode`
+fn encode_prime(kmer: u32, common_prefix_length: u8, encoding_data: &KMerEncodingData) -> u32 {
+    let k = encoding_data.k;
+
+    // This uses a mask of the form 0..01..1 (common_prefix_length trailing ones), to extract
+    // the relevant bits on the right, and invert (complement) them.
+    let zeromask = u32::MAX >> (32 - common_prefix_length);
+    let right = (kmer & zeromask) ^ zeromask;
+
+    // Assert that the values are as expected.
+    debug_assert!(common_prefix_length <= k);
+    debug_assert!(common_prefix_length % 2 == 0);
+
+    // Use the remainder mask (consisting of ones in the middle) to extract the bits
+    // in between the specifying pair, then shift the remainder to the correct position.
+    // The mask contains 0 after index k, so that if we have l+2 >= k (no remainder),
+    // we just get a zero here, which does nothing to our result.
+    let remainder = (kmer & encoding_data.remaindermasks[common_prefix_length as usize + 2]) >> 2;
+    right | remainder
 }
 
 /// Extracts canonical k-mers from the given sequence.
@@ -75,7 +175,7 @@ fn encode(kmer: u32, rev_compl_kmer: u32, bitmasks: &BitMasks) -> u32 {
 /// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
 pub fn seq_to_minenc_canon_kmer_iter<'a, 'b>(
     sequence: &'a [u8],
-    bitmasks: &'b BitMasks,
+    encoding_data: &'b KMerEncodingData,
 ) -> impl Iterator<Item = u32> + use<'a, 'b> {
     let mut seq_iter = sequence.iter();
     let mut kmer = 0_u32;
@@ -88,17 +188,18 @@ pub fn seq_to_minenc_canon_kmer_iter<'a, 'b>(
                 // Add repr to the end of kmer
                 kmer = (kmer << 2) | repr as u32;
                 // Clear any bits that exceed our k-mer size
-                kmer &= bitmasks.unused_bits_mask;
+                kmer &= encoding_data.unused_bits_mask;
 
                 // A <-> T and C <-> G
                 let complement_repr = repr as u32 ^ 0b11;
                 // Add complement_repr to the start of rev_compl_kmer
-                rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << (bitmasks.k * 2 - 2));
+                rev_compl_kmer =
+                    (rev_compl_kmer >> 2) | (complement_repr << (encoding_data.k * 2 - 2));
 
                 filled_bases += 1;
-                if filled_bases >= bitmasks.k {
+                if filled_bases >= encoding_data.k {
                     // Only yield a valid k-mer once our sliding window has 8 consecutive valid bases
-                    return Some(encode(kmer, rev_compl_kmer, bitmasks));
+                    return Some(encode(kmer, rev_compl_kmer, encoding_data));
                 }
             } else {
                 // Invalid/ambiguous char encountered
