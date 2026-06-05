@@ -46,7 +46,7 @@ pub struct KMerEncodingData {
 
 impl KMerEncodingData {
     pub fn new(k: u32) -> Option<Self> {
-        if (1..=15).step_by(2).contains(&k) {
+        if !(1..=15).step_by(2).contains(&k) {
             return None;
         }
 
@@ -640,5 +640,33 @@ mod tests {
         assert_eq!(reverse_complement(0b01, k), 0b10); // C -> G
         assert_eq!(reverse_complement(0b10, k), 0b01); // G -> C
         assert_eq!(reverse_complement(0b11, k), 0b00); // T -> A
+    }
+
+    #[test]
+    fn test_encode_is_bijective() {
+        // Test for odd values of k between 1 and 5 (as specified by Wittler's scheme constraints)
+        for k in (1..=5).step_by(2) {
+            let encoding_data = KMerEncodingData::new(k).unwrap();
+
+            let max_encoded_value = 4u32.pow(k) / 2;
+            let mut seen_kmers = super::bitvec![u32, super::Msb0; 0; max_encoded_value as usize];
+
+            // Generate all 4^k possible k-mers using 2-bit representations (00=A, 01=C, 10=G, 11=T)
+            let total_combinations = 4u32.pow(k);
+
+            for kmer in 0..total_combinations {
+                let rev_compl_kmer = reverse_complement(kmer, k as u8);
+                let code = encode(kmer, rev_compl_kmer, &encoding_data);
+
+                assert!(!seen_kmers[code as usize], "Duplicate encoding for k-mer {:b} and its reverse complement {:b} with code {} for k={}", kmer, rev_compl_kmer, code, k);
+                seen_kmers.set(code as usize, true);
+            }
+
+            assert!(
+                seen_kmers.count_ones() as u32 == max_encoded_value,
+                "Not all codes were generated for k={}",
+                k
+            );
+        }
     }
 }
