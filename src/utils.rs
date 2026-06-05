@@ -74,6 +74,7 @@ impl KMerEncodingData {
 }
 
 /// Encodes the canonical k-mer specified by the given k-mer and its reverse complement
+/// Canonical k-mers are mapped to the range [0, 1/2 * 4^k).
 /// Uses the encoding scheme described in
 /// (Wittler R. General encoding of canonical k-mers. Peer Community Journal. 2023.0)
 fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u32 {
@@ -307,6 +308,37 @@ pub fn get_results(results: &[lineage::EvaluationResult<'_, '_>]) -> String {
         .join("\n")
 }
 
+/// Compute the reverse complement of a given k-mer using 32-bit parallel bit-hacks.
+/// Expects a 2-bit encoded k-mer where (A=00, C=01, G=10, T=11).
+/// adapted from https://github.com/gi-bielefeld/MinEncCanKmer/blob/main/canonical.c
+pub fn reverse_complement(kmer: u32, k: u8) -> u32 {
+    let mut value = kmer;
+
+    // Reverse bit order
+    // Swap adjacent 2-bit pairs
+    value = ((value & 0xCCCCCCCC) >> 2) | ((value & 0x33333333) << 2);
+    // Swap 4-bit nibbles
+    value = ((value & 0xF0F0F0F0) >> 4) | ((value & 0x0F0F0F0F) << 4);
+    // Swap 8-bit bytes
+    value = ((value & 0xFF00FF00) >> 8) | ((value & 0x00FF00FF) << 8);
+    // Swap 16-bit halves
+    value = ((value & 0xFFFF0000) >> 16) | ((value & 0x0000FFFF) << 16);
+
+    // Complement the bases (A <-> T, C <-> G) and shift down.
+    let bitwidth = 32_u8;
+    // Shift right to discard the unneeded high-order padding bits,
+    // ensuring the resulting k-mer is correctly aligned to the right.
+    value = (!value) >> (bitwidth - 2 * k);
+
+    value
+}
+
+/// Computes the canonical form of a given k-mer by comparing it to its reverse complement and returning the lexicographically smaller one.
+pub fn canonicalize(kmer: u32, k: u8) -> u32 {
+    let rev_compl = reverse_complement(kmer, k);
+    std::cmp::min(kmer, rev_compl)
+}
+
 pub fn decompress_sequence(sequence: &[u8]) -> String {
     sequence
         .iter()
@@ -452,7 +484,10 @@ mod tests {
         cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_kmers,
     };
 
-    use super::{decompress_sequence, map_four_to_two_bit_repr, seq_to_kmers};
+    use super::{
+        canonicalize, decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement,
+        seq_to_kmers, KMerEncodingData,
+    };
 
     #[test]
     fn test_euclidean_norm() {
@@ -566,5 +601,44 @@ mod tests {
         let sequence = vec![1_u8, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
         let decompressed = decompress_sequence(&sequence);
         assert_eq!(decompressed, String::from("ACAGTCTGAGTCTGAG"));
+    }
+
+    #[test]
+    fn test_reverse_complement() {
+        let mut k = 5;
+        assert_eq!(reverse_complement(0b11_1111_1111, k), 0);
+        assert_eq!(reverse_complement(0b10_1101_1110, k), 0b01_0010_0001);
+        assert_eq!(reverse_complement(0b01_1101_0011, k), 0b00_1110_0010);
+        assert_eq!(reverse_complement(0b01_1110_0010, k), 0b01_1101_0010);
+        assert_eq!(reverse_complement(0, k), 0b11_1111_1111);
+
+        k = 3;
+        assert_eq!(reverse_complement(0b11_11_11, k), 0b00_00_00);
+        assert_eq!(reverse_complement(0b00_10_01, k), 0b10_01_11);
+        assert_eq!(reverse_complement(0b01_00_11, k), 0b00_11_10);
+        assert_eq!(reverse_complement(0, k), 0b11_11_11);
+
+        k = 16;
+        assert_eq!(
+            reverse_complement(0b11111111_11111111_11111111_11111111, k),
+            0
+        );
+        assert_eq!(
+            reverse_complement(0, k),
+            0b11111111_11111111_11111111_11111111
+        );
+        // Alternating C and G: CGCGCGCGCGCGCGCG = 0b01100110_01100110_01100110_01100110
+        // Is palindrome
+        let alt_cg = 0x66666666;
+        assert_eq!(reverse_complement(alt_cg, k), alt_cg);
+        // AAAA_CCCC_GGGG_TTTT is also palindrom
+        let mixed_kmer = 0b00000000_01010101_10101010_11111111;
+        assert_eq!(reverse_complement(mixed_kmer, k), mixed_kmer);
+
+        k = 1;
+        assert_eq!(reverse_complement(0b00, k), 0b11); // A -> T
+        assert_eq!(reverse_complement(0b01, k), 0b10); // C -> G
+        assert_eq!(reverse_complement(0b10, k), 0b01); // G -> C
+        assert_eq!(reverse_complement(0b11, k), 0b00); // T -> A
     }
 }
