@@ -42,6 +42,7 @@ pub struct KMerEncodingData {
     four_to_the_k_half_plus_one: u32,
     twice_four_to_the_k_half: u32,
     remaindermasks: [u32; 18],
+    n_unique_codes: u32,
 }
 
 impl KMerEncodingData {
@@ -63,12 +64,16 @@ impl KMerEncodingData {
             remaindermasks[i as usize] = zeromask & onemask;
         }
 
+        let n_unique_codes = 4u32.pow(k) / 2;
+        // to support even k, add 4^(k/2) / 2 to n_unique_codes, as we have 4^(k/2) palindroms,
+
         Some(Self {
             k: k as u8,
             unused_bits_mask: u32::MAX >> (32 - 2 * k),
             four_to_the_k_half_plus_one: 4u32.pow((k / 2) + 1),
             twice_four_to_the_k_half: 2 * 4u32.pow(k / 2),
             remaindermasks,
+            n_unique_codes,
         })
     }
 }
@@ -646,8 +651,8 @@ mod tests {
 
     #[test]
     fn test_encode_is_bijective() {
-        // Test for odd values of k between 1 and 5
-        for k in (1..=5).step_by(2) {
+        // has also been run for k up to 15, but that is too expensive to run on every test run, so we only test up to k=9 here
+        for k in (1..=9).step_by(2) {
             let encoding_data = KMerEncodingData::new(k).unwrap();
 
             let max_encoded_value = 4u32.pow(k) / 2;
@@ -659,7 +664,7 @@ mod tests {
                 let rev_compl_kmer = reverse_complement(kmer, k as u8);
                 let code = encode(kmer, rev_compl_kmer, &encoding_data);
 
-                // 1. Verify that the forward and reverse complement yield identical codes
+                // Verify that the forward and reverse complement yield identical codes
                 assert_eq!(
                     code,
                     encode(rev_compl_kmer, kmer, &encoding_data),
@@ -668,7 +673,7 @@ mod tests {
                     k
                 );
 
-                // 2. Verify that the code stays within the strict canonical bounds
+                // Verify that the code stays within the strict canonical bounds
                 assert!(
                     code < max_encoded_value,
                     "Code {} out of bounds for k={}",
@@ -679,8 +684,9 @@ mod tests {
                 counts[code as usize] += 1;
             }
 
-            // 3. For odd k, every canonical slot must be hit exactly twice
-            // (once by the forward sequence, once by its reverse complement)
+            // For odd k, every slot must be hit exactly twice
+            // once by the forward k-mer and once by its reverse complement,
+            // which is different from the forward k-mer as k is odd and thus palindromes are not possible
             for (code, &count) in counts.iter().enumerate() {
                 assert_eq!(
                     count, 2,
