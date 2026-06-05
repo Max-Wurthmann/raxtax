@@ -80,10 +80,12 @@ impl KMerEncodingData {
 fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u32 {
     let k = encoding_data.k;
     // number of common bits rounded down to nearest even number
-    let common_prefix_length = ((kmer ^ rev_compl_kmer).leading_zeros() / 2 * 2) as u8;
+    let common_prefix_length = ((kmer ^ rev_compl_kmer).trailing_zeros() / 2 * 2) as u8;
+
     let mut kmer_code = if common_prefix_length > k {
         debug_assert!(false, "palindrome can not occur with odd k");
         unsafe { unreachable_unchecked() };
+        // implement to support even k
     } else if common_prefix_length < k - 1 {
         // specifieing pair
 
@@ -126,7 +128,7 @@ fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u
 
     // subtract gaps
     // 2*(k//2-common_prefix_length-1) ones followed by k-2 zeros
-    if common_prefix_length <= k - 4 {
+    if k >= 4 && common_prefix_length <= k - 4 {
         let gaps = u32::MAX >> (32 - (k / 2 * 2 - common_prefix_length - 2));
 
         // use k - 1 if k is even
@@ -153,12 +155,12 @@ fn encode_prime(kmer: u32, common_prefix_length: u8, encoding_data: &KMerEncodin
 
     // This uses a mask of the form 0..01..1 (common_prefix_length trailing ones), to extract
     // the relevant bits on the right, and invert (complement) them.
-    let zeromask = u32::MAX >> (32 - common_prefix_length);
+    let zeromask = u32::MAX.unbounded_shr(32 - common_prefix_length as u32);
     let right = (kmer & zeromask) ^ zeromask;
 
     // Assert that the values are as expected.
     debug_assert!(common_prefix_length <= k);
-    debug_assert!(common_prefix_length % 2 == 0);
+    debug_assert!(common_prefix_length.is_multiple_of(2));
 
     // Use the remainder mask (consisting of ones in the middle) to extract the bits
     // in between the specifying pair, then shift the remainder to the correct position.
@@ -225,7 +227,7 @@ pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + us
     let mut filled_bases = 0_u32; // Tracks how many consecutive valid bases we have processed
 
     std::iter::from_fn(move || {
-        while let Some(char) = seq_iter.next() {
+        for char in seq_iter.by_ref() {
             if let Some(repr) = map_four_to_two_bit_repr(*char) {
                 // Add repr to the end of kmer
                 kmer = (kmer << 2) | repr as u16;
@@ -485,8 +487,8 @@ mod tests {
     };
 
     use super::{
-        canonicalize, decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement,
-        seq_to_kmers, KMerEncodingData,
+        decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement, seq_to_kmers,
+        KMerEncodingData,
     };
 
     #[test]
@@ -644,29 +646,48 @@ mod tests {
 
     #[test]
     fn test_encode_is_bijective() {
-        // Test for odd values of k between 1 and 5 (as specified by Wittler's scheme constraints)
+        // Test for odd values of k between 1 and 5
         for k in (1..=5).step_by(2) {
             let encoding_data = KMerEncodingData::new(k).unwrap();
 
             let max_encoded_value = 4u32.pow(k) / 2;
-            let mut seen_kmers = super::bitvec![u32, super::Msb0; 0; max_encoded_value as usize];
+            let mut counts = vec![0u8; max_encoded_value as usize];
 
-            // Generate all 4^k possible k-mers using 2-bit representations (00=A, 01=C, 10=G, 11=T)
             let total_combinations = 4u32.pow(k);
 
             for kmer in 0..total_combinations {
                 let rev_compl_kmer = reverse_complement(kmer, k as u8);
                 let code = encode(kmer, rev_compl_kmer, &encoding_data);
 
-                assert!(!seen_kmers[code as usize], "Duplicate encoding for k-mer {:b} and its reverse complement {:b} with code {} for k={}", kmer, rev_compl_kmer, code, k);
-                seen_kmers.set(code as usize, true);
+                // 1. Verify that the forward and reverse complement yield identical codes
+                assert_eq!(
+                    code,
+                    encode(rev_compl_kmer, kmer, &encoding_data),
+                    "Asymmetry found: k-mer {:b} and its RC do not produce the same code for k={}",
+                    kmer,
+                    k
+                );
+
+                // 2. Verify that the code stays within the strict canonical bounds
+                assert!(
+                    code < max_encoded_value,
+                    "Code {} out of bounds for k={}",
+                    code,
+                    k
+                );
+
+                counts[code as usize] += 1;
             }
 
-            assert!(
-                seen_kmers.count_ones() as u32 == max_encoded_value,
-                "Not all codes were generated for k={}",
-                k
-            );
+            // 3. For odd k, every canonical slot must be hit exactly twice
+            // (once by the forward sequence, once by its reverse complement)
+            for (code, &count) in counts.iter().enumerate() {
+                assert_eq!(
+                    count, 2,
+                    "Slot {} was hit {} times instead of 2 for k={}",
+                    code, count, k
+                );
+            }
         }
     }
 }
