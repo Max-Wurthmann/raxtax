@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{bail, Result};
+use bitvec::prelude::*;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use log::{log_enabled, warn};
@@ -66,12 +67,12 @@ pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + us
 /// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
 /// The resulting k-mers are sorted and unique.
 pub fn seq_to_unique_canon_kmers(sequence: &[u8]) -> Vec<u16> {
-    // maybe replace with a bitset or bitvec
-    let mut k_mers = HashSet::new();
+    // u16::MAX as usize / 32 + 1 == 2048, which is the number of u32 needed to represent all possible u16 values as bits
+    let mut bitarr = BitArray::<[u32; u16::MAX as usize / 32 + 1], Msb0>::ZERO;
     seq_to_canon_kmer_iter(sequence).for_each(|canonical_kmer| {
-        k_mers.insert(canonical_kmer);
+        bitarr.set(canonical_kmer as usize, true);
     });
-    k_mers.into_iter().sorted().collect_vec()
+    bitarr.iter_ones().map(|idx| idx as u16).collect_vec()
 }
 
 pub fn seq_to_kmers(sequence: &[u8]) -> Vec<u16> {
