@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
     fs::File,
-    hint::unreachable_unchecked,
     io::{BufReader, Read},
     path::PathBuf,
 };
@@ -43,21 +42,19 @@ pub struct KMerEncodingData {
     unused_bits_mask: u32,
     four_to_the_k_half_plus_one: u32,
     twice_four_to_the_k_half: u32,
-    remaindermasks: [u32; 18],
+    remaindermasks: [u32; 19],
     n_unique_codes: u32,
 }
 
 impl KMerEncodingData {
     pub fn new(k: u32) -> Result<Self> {
-        if !(1..=15).step_by(2).contains(&k) {
-            bail!("k-mer size k must be odd and 1 <= k <= 16.");
-            // adjust to support even k
+        if !(1..=16).contains(&k) {
+            bail!("k-mer size k must satisfy 1 <= k <= 16.");
         }
 
-        // size 18 as k + 2 is largest index we need
-        // k <= 15 implies k + 2 < 18
-        // adjust to support even k
-        let mut remaindermasks = [0u32; 18];
+        // size 19 as k + 2 is largest index we need
+        // k <= 16 implies k + 2 < 19
+        let mut remaindermasks = [0u32; 19];
 
         remaindermasks[0] = u32::MAX;
         for i in 1..=k {
@@ -67,14 +64,19 @@ impl KMerEncodingData {
             remaindermasks[i as usize] = zeromask & onemask;
         }
 
-        let n_unique_codes = 4u32.pow(k) / 2;
-        // to support even k, add 4^(k/2) / 2 to n_unique_codes, as we have 4^(k/2) palindroms,
+        let n_unique_codes = if k % 2 == 1 {
+            // 4u32.pow(k) / 2
+            1 << (2 * k - 1)
+        } else {
+            // (4u64.pow(k) / 2 + 4u64.pow(k / 2) / 2) as u32
+            (1 << (2 * k - 1)) + (1 << (k - 1))
+        };
 
         Ok(Self {
             k: k as u8,
             unused_bits_mask: u32::MAX >> (32 - 2 * k),
-            four_to_the_k_half_plus_one: 4u32.pow((k / 2) + 1),
-            twice_four_to_the_k_half: 2 * 4u32.pow(k / 2),
+            four_to_the_k_half_plus_one: 1 << ((k / 2) * 2 + 2),
+            twice_four_to_the_k_half: 1 << ((k / 2) * 2 + 1),
             remaindermasks,
             n_unique_codes,
         })
@@ -85,15 +87,20 @@ impl KMerEncodingData {
 /// Canonical k-mers are mapped to the range [0, 1/2 * 4^k).
 /// Uses the encoding scheme described in
 /// (Wittler R. General encoding of canonical k-mers. Peer Community Journal. 2023.0)
-fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u32 {
+pub fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u32 {
     let k = encoding_data.k;
     // number of common bits rounded down to nearest even number
     let common_prefix_length = ((kmer ^ rev_compl_kmer).trailing_zeros() / 2 * 2) as u8;
 
     let mut kmer_code = if common_prefix_length > k {
-        debug_assert!(false, "palindrome can not occur with odd k");
-        unsafe { unreachable_unchecked() };
-        // implement to support even k
+        // is p palindrome
+        debug_assert!(k % 2 == 0, "palindrome can not occur with odd k");
+        debug_assert!(
+            common_prefix_length == 32,
+            "palindrome should have common prefix length of 32"
+        );
+        // use k as common prefix length as actual common prefix length is 32 > k
+        encode_prime(kmer, k, encoding_data)
     } else if common_prefix_length < k - 1 {
         // specifieing pair
 
@@ -117,9 +124,7 @@ fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u
     } else {
         // common_prefix_length == k - 1 as
         // - !common_prefix_length < k - 1 and
-        // - !common_prefix_length > k and
-        // - k is odd and
-        // - common_prefix_length is even
+        // - !common_prefix_length >= k (as this would be a palindrome, see first case)
         debug_assert!(common_prefix_length == k - 1);
 
         // only differs in middle char
@@ -139,16 +144,15 @@ fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) -> u
     if k >= 4 && common_prefix_length <= k - 4 {
         let gaps = u32::MAX >> (32 - (k / 2 * 2 - common_prefix_length - 2));
 
-        // use k - 1 if k is even
-        // currently only odd k are supported
-        // adjust to support even k
-        kmer_code -= gaps << k;
+        if k % 2 == 1 {
+            kmer_code -= gaps << k;
+        } else {
+            kmer_code -= gaps << (k - 1);
+        }
     }
 
     // subtract gap in code due to specifying middle position
-    // only applies if k is odd
-    // add check to support even k
-    if kmer_code >= encoding_data.four_to_the_k_half_plus_one {
+    if k % 2 == 1 && kmer_code >= encoding_data.four_to_the_k_half_plus_one {
         kmer_code -= encoding_data.twice_four_to_the_k_half;
     }
 
@@ -508,11 +512,8 @@ mod tests {
     use statrs::assert_almost_eq;
 
     use crate::utils::{
-        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_8mers,
-    };
-
-    use super::{
-        decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement, seq_to_8mers,
+        cosine_similarity, decompress_sequence, encode, euclidean_distance_l1, euclidean_norm,
+        map_four_to_two_bit_repr, reverse_complement, seq_to_8mers, seq_to_unique_canon_8mers,
         KMerEncodingData,
     };
 
@@ -671,16 +672,16 @@ mod tests {
 
     #[test]
     fn test_encode_is_bijective() {
-        // has also been run for k up to 15, but that is too expensive to run on every test run, so we only test up to k=9 here
-        for k in (1..=9).step_by(2) {
+        // has also been run for all k <= 16,
+        // but takes too long to run every time (k=16 ~ 10 minutes)
+        for k in 1..9 {
             let encoding_data = KMerEncodingData::new(k).unwrap();
 
-            let max_encoded_value = 4u32.pow(k) / 2;
-            let mut counts = vec![0u8; max_encoded_value as usize];
+            let mut counts = vec![0u8; encoding_data.n_unique_codes as usize];
 
-            let total_combinations = 4u32.pow(k);
+            let max_kmer = (4u64.pow(k) - 1) as u32;
 
-            for kmer in 0..total_combinations {
+            for kmer in 0..=max_kmer {
                 let rev_compl_kmer = reverse_complement(kmer, k as u8);
                 let code = encode(kmer, rev_compl_kmer, &encoding_data);
 
@@ -695,7 +696,7 @@ mod tests {
 
                 // Verify that the code stays within the strict canonical bounds
                 assert!(
-                    code < max_encoded_value,
+                    code < encoding_data.n_unique_codes,
                     "Code {} out of bounds for k={}",
                     code,
                     k
@@ -704,14 +705,16 @@ mod tests {
                 counts[code as usize] += 1;
             }
 
-            // For odd k, every slot must be hit exactly twice
-            // once by the forward k-mer and once by its reverse complement,
-            // which is different from the forward k-mer as k is odd and thus palindromes are not possible
             for (code, &count) in counts.iter().enumerate() {
+                let expect = if k % 2 == 0 && code < 4usize.pow(k / 2) {
+                    1 // palindrome
+                } else {
+                    2 // kmer and its reverse complement
+                };
                 assert_eq!(
-                    count, 2,
-                    "Slot {} was hit {} times instead of 2 for k={}",
-                    code, count, k
+                    count, expect,
+                    "Slot {} was hit {} times instead of {} for k={}",
+                    code, count, expect, k
                 );
             }
         }
