@@ -205,7 +205,18 @@ fn check_incomplete_output(path: &PathBuf, processed_queries: &HashSet<String>) 
         })
         .collect_vec();
 
-    dbg!(&retained_lines.len());
+    if log_enabled!(Level::Info) {
+        info!(
+            "Retaining {} output lines from {}.",
+            retained_lines.len(),
+            path.display()
+        );
+        eprintln!(
+            "[INFO ] Retaining {} output lines from {}.",
+            retained_lines.len(),
+            path.display()
+        );
+    }
 
     if needs_rewrite {
         let tmp_path = path.with_extension("tmp");
