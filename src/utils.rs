@@ -11,6 +11,7 @@ use bitvec::prelude::*;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use log::{log_enabled, warn};
+use serde::{Deserialize, Serialize};
 
 use crate::lineage;
 
@@ -36,8 +37,9 @@ const REVERSE: [bool; 16] = [
     true, true,
 ];
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KMerEncodingData {
-    k: u8,
+    pub k: u8,
     unused_bits_mask: u32,
     four_to_the_k_half_plus_one: u32,
     twice_four_to_the_k_half: u32,
@@ -46,9 +48,10 @@ pub struct KMerEncodingData {
 }
 
 impl KMerEncodingData {
-    pub fn new(k: u32) -> Option<Self> {
+    pub fn new(k: u32) -> Result<Self> {
         if !(1..=15).step_by(2).contains(&k) {
-            return None;
+            bail!("k-mer size k must be odd and 1 <= k <= 16.");
+            // adjust to support even k
         }
 
         // size 18 as k + 2 is largest index we need
@@ -67,7 +70,7 @@ impl KMerEncodingData {
         let n_unique_codes = 4u32.pow(k) / 2;
         // to support even k, add 4^(k/2) / 2 to n_unique_codes, as we have 4^(k/2) palindroms,
 
-        Some(Self {
+        Ok(Self {
             k: k as u8,
             unused_bits_mask: u32::MAX >> (32 - 2 * k),
             four_to_the_k_half_plus_one: 4u32.pow((k / 2) + 1),
@@ -222,10 +225,27 @@ pub fn seq_to_minenc_canon_kmer_iter<'a, 'b>(
     })
 }
 
+/// Extracts all canonical k-mers from the given sequence, where k is odd and 1 <= k <= 16.
+/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
+/// Canonical k-mers are encoded using a minimal encoding scheme and are thus in the range [0, 1/2 * 4^k).
+/// (see Wittler R. General encoding of canonical k-mers. Peer Community Journal. 2023)
+/// The resulting k-mers are sorted and unique.
+pub fn seq_to_unique_minenc_canon_kmers(
+    sequence: &[u8],
+    encoding_data: &KMerEncodingData,
+) -> Vec<u32> {
+    // let mut bitvec = bitvec![0; encoding_data.n_unique_codes as usize];
+    let mut hash_set = HashSet::<u32>::new();
+    seq_to_minenc_canon_kmer_iter(sequence, encoding_data).for_each(|kmer_code| {
+        hash_set.insert(kmer_code);
+    });
+    hash_set.into_iter().sorted().collect_vec()
+}
+
 /// Extracts canonical 8-mers from the given sequence.
 /// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
 /// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
-pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
+pub fn seq_to_canon_8mer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
     let mut seq_iter = sequence.iter();
     let mut kmer = 0_u16;
     let mut rev_compl_kmer = 0_u16;
@@ -263,16 +283,16 @@ pub fn seq_to_canon_kmer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + us
 /// Extracts all canonical 8-mers from the given sequence.
 /// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
 /// The resulting k-mers are sorted and unique.
-pub fn seq_to_unique_canon_kmers(sequence: &[u8]) -> Vec<u16> {
+pub fn seq_to_unique_canon_8mers(sequence: &[u8]) -> Vec<u16> {
     // u16::MAX as usize / 32 + 1 == 2048, which is the number of u32 needed to represent all possible u16 values as bits
     let mut bitarr = BitArray::<[u32; u16::MAX as usize / 32 + 1], Msb0>::ZERO;
-    seq_to_canon_kmer_iter(sequence).for_each(|canonical_kmer| {
+    seq_to_canon_8mer_iter(sequence).for_each(|canonical_kmer| {
         bitarr.set(canonical_kmer as usize, true);
     });
     bitarr.iter_ones().map(|idx| idx as u16).collect_vec()
 }
 
-pub fn seq_to_kmers(sequence: &[u8]) -> Vec<u16> {
+pub fn seq_to_8mers(sequence: &[u8]) -> Vec<u16> {
     let mut k_mers = HashSet::new();
     sequence.windows(8).for_each(|vals| {
         if let Some(k_mer) = vals
@@ -488,11 +508,11 @@ mod tests {
     use statrs::assert_almost_eq;
 
     use crate::utils::{
-        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_kmers,
+        cosine_similarity, euclidean_distance_l1, euclidean_norm, seq_to_unique_canon_8mers,
     };
 
     use super::{
-        decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement, seq_to_kmers,
+        decompress_sequence, encode, map_four_to_two_bit_repr, reverse_complement, seq_to_8mers,
         KMerEncodingData,
     };
 
@@ -536,7 +556,7 @@ mod tests {
     #[test]
     fn test_seq_to_unique_canon_kmers() {
         let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
-            let output = seq_to_unique_canon_kmers(input_seq);
+            let output = seq_to_unique_canon_8mers(input_seq);
             assert!(output.windows(2).all(|w| w[0] <= w[1]));
             assert_equal(output, kmers_expected);
         };
@@ -571,7 +591,7 @@ mod tests {
     #[test]
     fn test_seq_to_kmers() {
         let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
-            let output = seq_to_kmers(input_seq);
+            let output = seq_to_8mers(input_seq);
             assert!(output.windows(2).all(|w| w[0] <= w[1]));
             assert_equal(output, kmers_expected);
         };

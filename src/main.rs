@@ -8,7 +8,7 @@ use raxtax::io::FileFingerprint;
 use raxtax::io::{self, ResultsToPrint};
 use raxtax::parser;
 use raxtax::raxtax::{raxtax, RaxtaxSettings};
-use raxtax::utils;
+use raxtax::utils::{self, KMerEncodingData};
 use std::io::Write;
 
 fn main() {
@@ -58,18 +58,24 @@ fn main() {
     };
     let _total_tmr = timer!(Level::Info; "Total Runtime");
 
-    // Parse reference databse
-    let (store_db, tree) = parser::parse_reference_fasta_file(&checkpoint.db_fingerprint.path)
-        .unwrap_or_else(|e| {
-            utils::report_error(
-                e,
-                format!(
-                    "Failed to parse {}",
-                    checkpoint.db_fingerprint.path.display()
-                ),
-            );
-            exit(exitcode::NOINPUT);
-        });
+    let encoding_data = KMerEncodingData::new(args.kmer_size).unwrap_or_else(|e| {
+        utils::report_error(e, "Please provide a valid k-mer size.");
+        exit(exitcode::USAGE);
+    });
+
+    // Parse reference database
+    let (store_db, tree) =
+        parser::parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data)
+            .unwrap_or_else(|e| {
+                utils::report_error(
+                    e,
+                    format!(
+                        "Failed to parse {}",
+                        checkpoint.db_fingerprint.path.display()
+                    ),
+                );
+                exit(exitcode::NOINPUT);
+            });
     if store_db && !args.skip_db {
         match args.get_db_output() {
             Ok((db_output, db_path)) => {

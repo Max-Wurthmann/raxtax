@@ -1,12 +1,15 @@
 use ahash::HashSet;
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressIterator, ProgressStyle};
-use log::Level;
+use log::{log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
 use std::{io::Read, path::PathBuf};
 
-use crate::{tree::Tree, utils};
+use crate::{
+    tree::Tree,
+    utils::{self, KMerEncodingData},
+};
 
 pub type LineageBinPair = (String, Option<String>);
 
@@ -36,16 +39,27 @@ fn map_dna_char(ch: char) -> u8 {
 }
 
 #[time("info", "Parsing References")]
-pub fn parse_reference_fasta_file(sequence_path: &PathBuf) -> Result<(bool, Tree)> {
+pub fn parse_reference_fasta_file(
+    sequence_path: &PathBuf,
+    encoding_data: KMerEncodingData,
+) -> Result<(bool, Tree)> {
     if let Ok(tree) = Tree::load_from_file(sequence_path) {
-        return Ok((false, tree));
+        if tree.encoding_data != encoding_data {
+            let notification = format!("k-mer size of loaded tree (k={}) does not match specified k-mer size (k={}). Attempting to reparse reference file using k={} ...", tree.encoding_data.k, encoding_data.k, encoding_data.k);
+            warn!("{}", notification);
+            if log_enabled!(log::Level::Warn) {
+                eprintln!("\x1b[33m[WARN ]\x1b[0m {}", notification);
+            }
+        } else {
+            return Ok((false, tree));
+        }
     }
     let mut fasta_str = String::new();
     let _ = utils::get_reader(sequence_path)?.read_to_string(&mut fasta_str);
-    Ok((true, parse_reference_fasta_str(&fasta_str)?))
+    Ok((true, parse_reference_fasta_str(&fasta_str, encoding_data)?))
 }
 
-fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
+fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -> Result<Tree> {
     if fasta_str.is_empty() {
         bail!("File is empty")
     }
@@ -104,7 +118,7 @@ fn parse_reference_fasta_str(fasta_str: &str) -> Result<Tree> {
         }
         (labels, sequences)
     };
-    Tree::new(labels, sequences)
+    Tree::new(labels, sequences, encoding_data)
 }
 
 #[time("info", "Parsing Queries")]

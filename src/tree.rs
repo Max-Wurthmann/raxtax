@@ -13,7 +13,10 @@ use logging_timer::time;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{parser::LineageBinPair, utils::seq_to_canon_kmer_iter};
+use crate::{
+    parser::LineageBinPair,
+    utils::{seq_to_minenc_canon_kmer_iter, KMerEncodingData},
+};
 
 #[cfg(feature = "huge_db")]
 type IndexType = usize;
@@ -42,6 +45,7 @@ pub struct Tree {
 
     // for each k-mer (outer idx), the vector of seqneces (sequenceIDs) containing it
     pub k_mer_map: Vec<Vec<IndexType>>,
+    pub encoding_data: KMerEncodingData,
 
     pub bin_idx_to_lineage_idxs: Vec<Vec<usize>>,
     pub lineage_idx_to_bin_idx: Vec<Option<usize>>,
@@ -50,7 +54,11 @@ pub struct Tree {
 
 impl Tree {
     #[time("debug", "Tree::{}")]
-    pub fn new(labels: Vec<(String, Option<String>)>, sequences: Vec<Vec<u8>>) -> Result<Self> {
+    pub fn new(
+        labels: Vec<(String, Option<String>)>,
+        sequences: Vec<Vec<u8>>,
+        encoding_data: KMerEncodingData,
+    ) -> Result<Self> {
         check_lineage_size(labels.len());
         let mut root = Node::new(String::from("root"), 0, NodeType::Inner);
         let mut sequence_map: HashMap<Vec<u8>, Vec<IndexType>> =
@@ -117,7 +125,7 @@ impl Tree {
                     .unwrap()
                     .push(idx as IndexType);
 
-                for k_mer in seq_to_canon_kmer_iter(sequence) {
+                for k_mer in seq_to_minenc_canon_kmer_iter(sequence, &encoding_data) {
                     k_mer_map[k_mer as usize].push(idx as IndexType);
                 }
                 Ok(())
@@ -162,6 +170,7 @@ impl Tree {
                 .into_par_iter()
                 .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
                 .collect(),
+            encoding_data,
             bin_idx_to_lineage_idxs,
             lineage_idx_to_bin_idx,
             num_tips: confidence_idx,

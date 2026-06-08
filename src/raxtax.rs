@@ -41,9 +41,9 @@ impl RaxtaxSettings {
 }
 
 #[time("info")]
-pub fn raxtax<'a, 'b>(
-    queries: &'b [(String, Vec<u8>)],
-    tree: &'a Tree,
+pub fn raxtax(
+    queries: &[(String, Vec<u8>)],
+    tree: &Tree,
     chunk_size: usize,
     sender: &crossbeam::channel::Sender<ResultsToPrint>,
     settings: RaxtaxSettings,
@@ -86,7 +86,7 @@ pub fn raxtax<'a, 'b>(
                     }
                 }
                 let tmr = timer!(Level::Debug; "K-mer Intersections");
-                let k_mers = utils::seq_to_unique_canon_kmers(query_sequence);
+                let k_mers = utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data);
                 assert!(u16::try_from(k_mers.len()).is_ok());
                 let num_trials = k_mers.len() / 2;
                 for query_kmer in &k_mers {
