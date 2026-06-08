@@ -219,6 +219,7 @@ mod tests {
     use crate::{
         lineage::{EvaluationResult, Lineage},
         tree::Tree,
+        utils::KMerEncodingData,
     };
 
     #[test]
@@ -238,7 +239,12 @@ mod tests {
             [0b00].repeat(9),
             [0b00].repeat(9),
         ];
-        let tree = Tree::new(lineages.into_iter().zip(bins).collect_vec(), sequences).unwrap();
+        let tree = Tree::new(
+            lineages.into_iter().zip(bins).collect_vec(),
+            sequences,
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         let confidence_values = vec![0.1, 0.3, 0.4, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -294,7 +300,12 @@ mod tests {
             [0b00].repeat(9),
             [0b00].repeat(9),
         ];
-        let tree = Tree::new(lineages.into_iter().zip(bins).collect_vec(), sequences).unwrap();
+        let tree = Tree::new(
+            lineages.into_iter().zip(bins).collect_vec(),
+            sequences,
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -355,7 +366,7 @@ mod tests {
             ),
         ];
         let sequences = vec![[0b00].repeat(9), [0b00].repeat(9), [0b00].repeat(9)];
-        let tree = Tree::new(lineages, sequences).unwrap();
+        let tree = Tree::new(lineages, sequences, KMerEncodingData::new(8).unwrap()).unwrap();
         let confidence_values = vec![0.004, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -409,7 +420,12 @@ mod tests {
             [0b00].repeat(9),
             [0b00].repeat(9),
         ];
-        let tree = Tree::new(lineages.into_iter().zip(bins).collect_vec(), sequences).unwrap();
+        let tree = Tree::new(
+            lineages.into_iter().zip(bins).collect_vec(),
+            sequences,
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -448,7 +464,12 @@ mod tests {
             [0b00].repeat(9),
             [0b00].repeat(9),
         ];
-        let tree = Tree::new(lineages.into_iter().zip(bins).collect_vec(), sequences).unwrap();
+        let tree = Tree::new(
+            lineages.into_iter().zip(bins).collect_vec(),
+            sequences,
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");

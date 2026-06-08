@@ -176,7 +176,7 @@ mod tests {
 
     use itertools::Itertools;
 
-    use crate::tree::Tree;
+    use crate::{tree::Tree, utils::KMerEncodingData};
 
     use super::{parse_query_fasta_str, parse_reference_fasta_str};
 
@@ -195,7 +195,7 @@ GTGCGCTATGCGA
 >Badabing|Badabum;tax=p:Phylum2,c:Class3,o:Order3,f:Family4,g:Genus4,s:Species5;
 ATACGCTTTGCGT";
 
-        let tree = parse_reference_fasta_str(fasta_str).unwrap();
+        let tree = parse_reference_fasta_str(fasta_str, KMerEncodingData::new(8).unwrap()).unwrap();
         for (k, v) in tree.k_mer_map.iter().enumerate() {
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
@@ -270,7 +270,8 @@ AAACCCCGG";
          * 4: AAACCCCGG -> CCGGGGTTT
          */
 
-        let Tree { k_mer_map, .. } = parse_reference_fasta_str(fasta_str).unwrap();
+        let Tree { k_mer_map, .. } =
+            parse_reference_fasta_str(fasta_str, KMerEncodingData::new(8).unwrap()).unwrap();
         for (k, v) in k_mer_map.iter().enumerate() {
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
