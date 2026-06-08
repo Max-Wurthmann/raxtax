@@ -176,12 +176,22 @@ mod tests {
 
     use itertools::Itertools;
 
-    use crate::{tree::Tree, utils::KMerEncodingData};
+    use crate::{
+        tree::Tree,
+        utils::{encode, reverse_complement, KMerEncodingData},
+    };
 
     use super::{parse_query_fasta_str, parse_reference_fasta_str};
 
     #[test]
     fn test_str_parser() {
+        let minenc_8mer = |kmer| {
+            encode(
+                kmer,
+                reverse_complement(kmer, 8),
+                &KMerEncodingData::new(8).unwrap(),
+            ) as usize
+        };
         let fasta_str = r">Badabing|Badabum;tax=p:Phylum1,c:Class1,o:Order1,f:Family1,g:Genus1,s:Species1;
 AAACCCTTTGGGA
 >Badabing|Badabum;tax=p:Phylum1,c:Class1,o:Order1,f:Family1,g:Genus1,s:Species2;
@@ -202,20 +212,20 @@ ATACGCTTTGCGT";
             }
         }
         assert_eq!(
-            tree.k_mer_map[0b0001_0101_1111_1110_usize]
+            tree.k_mer_map[minenc_8mer(0b0001_0101_1111_1110)]
                 .iter()
                 .collect_vec(),
             &[&0]
         );
         assert_eq!(
-            tree.k_mer_map[0b0000_1001_1011_0011_usize]
+            tree.k_mer_map[minenc_8mer(0b0000_1001_1011_0011)]
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&1, &4, &5]
         );
         assert_eq!(
-            tree.k_mer_map[0b0101_0011_0010_0110_usize]
+            tree.k_mer_map[minenc_8mer(0b0101_0011_0010_0110)]
                 .iter()
                 .collect_vec(),
             &[&3]
@@ -252,6 +262,13 @@ ACGTWSMKRYBDHVN";
 
     #[test]
     fn test_kmers() {
+        let minenc_8mer = |kmer| {
+            encode(
+                kmer,
+                reverse_complement(kmer, 8),
+                &KMerEncodingData::new(8).unwrap(),
+            ) as usize
+        };
         let fasta_str = r">Badabing|Badabum;tax=p:Phylum1,c:Class1,o:Order1,f:Family1,g:Genus1,s:Species1;
 AAACCCCGT
 >Badabing|Badabum;tax=p:Phylum1,c:Class1,o:Order1,f:Family1,g:Genus1,s:Species1;
@@ -277,9 +294,10 @@ AAACCCCGG";
                 println!("{k:b}:\n {v:?}");
             }
         }
+
         assert_eq!(
             // AAACCCCG
-            k_mer_map[0b01_0101_0110_usize]
+            k_mer_map[minenc_8mer(0b01_0101_0110)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -287,7 +305,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // AACCCCGG
-            k_mer_map[0b0101_0101_1010_usize]
+            k_mer_map[minenc_8mer(0b0101_0101_1010)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -295,7 +313,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // AACCCCGT
-            k_mer_map[0b101_0101_1011_usize]
+            k_mer_map[minenc_8mer(0b101_0101_1011)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -303,7 +321,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // CGGGGTTA
-            k_mer_map[0b0110_1010_1011_1100_usize]
+            k_mer_map[minenc_8mer(0b0110_1010_1011_1100)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -311,7 +329,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // GGTTTTAA
-            k_mer_map[0b1010_1111_1111_0000_usize]
+            k_mer_map[minenc_8mer(0b1010_1111_1111_0000)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -319,7 +337,7 @@ AAACCCCGG";
         );
         // GGTTTTAA
         assert_eq!(
-            k_mer_map[0b1010_1111_1111_0000_usize]
+            k_mer_map[minenc_8mer(0b1010_1111_1111_0000)]
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -327,7 +345,7 @@ AAACCCCGG";
         );
         // GTTTTAAA
         assert_eq!(
-            k_mer_map[0b1011_1111_1100_0000_usize]
+            k_mer_map[minenc_8mer(0b1011_1111_1100_0000)]
                 .iter()
                 .sorted()
                 .collect_vec(),
