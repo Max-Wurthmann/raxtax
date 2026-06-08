@@ -63,7 +63,8 @@ impl Tree {
         let mut root = Node::new(String::from("root"), 0, NodeType::Inner);
         let mut sequence_map: HashMap<Vec<u8>, Vec<IndexType>> =
             sequences.iter().map(|s| (s.clone(), Vec::new())).collect();
-        let mut k_mer_map: Vec<Vec<IndexType>> = vec![Vec::new(); 2 << 15];
+        let mut k_mer_map: Vec<Vec<IndexType>> =
+            vec![Vec::new(); encoding_data.n_unique_codes as usize];
         let mut lineage_sequence_pairs = labels.into_iter().zip_eq(sequences).collect_vec();
         lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
         let mut confidence_idx = 0_usize;

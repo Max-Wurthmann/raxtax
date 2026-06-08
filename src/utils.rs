@@ -43,7 +43,7 @@ pub struct KMerEncodingData {
     four_to_the_k_half_plus_one: u32,
     twice_four_to_the_k_half: u32,
     remaindermasks: [u32; 19],
-    n_unique_codes: u32,
+    pub n_unique_codes: u32,
 }
 
 impl KMerEncodingData {
