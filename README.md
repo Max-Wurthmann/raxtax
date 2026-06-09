@@ -3,6 +3,7 @@
 `raxtax` is a fast and efficient k-mer-based non-Bayesian taxonomic classifier for barcoding DNA sequences.
 The manuscript is available at [Bioinformatics](https://doi.org/10.1093/bioinformatics/btaf620).
 This project is heavily inspired by the SINTAX algorithm [[1]](#1).
+K-mers are encoded using a minimal encoding scheme for canonical k-mers [[2]](#2).
 
 ## Installation
 
@@ -13,6 +14,7 @@ Precompiled binaries are available from the [Github Release page](https://github
 ### Bioconda (only 64-bit Linux and 64-bit macOS)
 
 `raxtax` can be installed via:
+
 ```sh
 conda install bioconda::raxtax
 ```
@@ -20,6 +22,7 @@ conda install bioconda::raxtax
 ### [crates.io](https://crates.io/crates/raxtax)
 
 `raxtax` can be installed via:
+
 ```sh
 cargo install raxtax
 ```
@@ -27,6 +30,7 @@ cargo install raxtax
 ### Build From Source
 
 To install from source (with maximum performance):
+
 ```sh
 git clone https://github.com/noahares/raxtax.git
 cd raxtax
@@ -40,11 +44,12 @@ cargo build --profile=ultra
 ## Usage
 
 ```sh
-Usage: raxtax [OPTIONS] --database-path <DATABASE_PATH> --query-file <QUERY_FILE>
+Usage: raxtax [OPTIONS] --database-path <DATABASE_PATH> --kmer-size <KMER_SIZE>
 
 Options:
   -d, --database-path <DATABASE_PATH>  Path to the database fasta or bin file
   -i, --query-file <QUERY_FILE>        Path to the query file
+  -k, --kmer-size <KMER_SIZE>          k-mer size must satisfy 1 <= k <= 16
       --skip-exact-matches             If used for mislabling analysis, you want to skip exact sequence matches
       --tsv                            Output primary result file in tsv format
       --binning                        Output best taxonomic bin for each query
@@ -71,12 +76,13 @@ The files `example/diptera_references.fasta` and `example/diptera_queries.fasta`
 **If you did not clone this repository to acquire the `raxtax` executable, you may have to download these files from GitHub (via cloning the repository or manual download).**
 
 From the project root (otherwise adjust the paths) run:
+
 ```sh
 # with raxtax installed
-<path/to/raxtax> -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+<path/to/raxtax> -k 7 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
 
 # from source
-cargo run --profile=ultra -- -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+cargo run --profile=ultra -- -k 7 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
 ```
 
 This creates a new folder `example/example_run` with the taxonomic assignments and confidence values for each query in `raxtax.out` and various log messages (including exact sequence matches) in `raxtax.log`.
@@ -145,6 +151,12 @@ query1  Arthropoda  1.0 Insecta 1.0 Diptera 0.8 Muscidae    0.68    Musca   0.52
 
 ### Other Options
 
+`--kmer-size` is a required option. It determines the length of the k-mers that are used to compare the queries to the references.
+K must be between 1 and 16 (inclusive).
+Choosing large k (k >= 15) significantly increase the memory footprint of `raxtax` and is not recommended for most use cases.
+Choosing small k (k <= 5) will make the analysis less specific and therefore less accurate.
+Also note that odd k allow for more efficient representation of the k-mers in memory [[2]](#2).
+
 `--skip-exact-matches` may be useful when running the database against itself to identify mislabeled sequences. Per default, `raxtax` skips over exact sequences matches if there is **exactly one match** and outputs a confidence of 1.0 for the exact match.
 This option makes it so that any exact match is not considered for the analysis of a query sequence.
 
@@ -160,7 +172,7 @@ This is only recommended if you run with that database only once or it is very s
 `--raw-confidence` will output the real confidence values if there is 1 exact match instead of setting the confidence to 1.0.
 This is mostly a debugging option, but might come in handy for specific usecases.
 
-`--threads` may be omitted most of the time and `raxtax` will use as many cores as your system has available. Because the analysis is _embarrassingly parallel_, this is a sensible default.
+`--threads` may be omitted most of the time and `raxtax` will use as many cores as your system has available. Because the analysis is *embarrassingly parallel*, this is a sensible default.
 However, if you experience problems due to hyper-threading, you might want to reduce the number of threads, to increase parallel efficiency.
 
 `--redo` will enable overwriting of existing output files. **Use at your own risk!**
@@ -195,13 +207,18 @@ The list of already processed queries is kept in `<prefix>/raxtax.ckp` and can b
 **Do this at your own risk!**
 
 ## References
+
 <a id="1">[1]</a>
-Edgar, Robert C. "SINTAX: a simple non-Bayesian taxonomy classifier for 16S and ITS sequences." biorxiv (2016): 074161.
+Edgar, Robert C. "SINTAX: A Simple Non-Bayesian Taxonomy Classifier for 16S and ITS Sequences." bioRxiv, 2016, p. 074161. https://doi.org/10.1101/074161.
+
+<a id="2">[2]</a>
+Wittler, Roland. "General Encoding of Canonical k-mers." Peer Community Journal, vol. 3, 2023, p. e87. https://doi.org/10.24072/pcjournal.323.
 
 ## Copyright
+
 Up until **v1.4.1** this work was licensed under CC BY-NC-SA 4.0.
 
 Since **v1.5.0** `raxtax` is licensed under GNU Affero General Public License v3.0 (GNU AGPLv3).
-To view a copy of this license, visit https://www.gnu.org/licenses/.
+To view a copy of this license, visit <https://www.gnu.org/licenses/>.
 
- If you would like to use `raxtax` but can't comply with the license terms (e.g. closed source commercial use) contact Alexandros Stamatakis via stamatak@ics.forth.gr for a commercial license.
+If you would like to use `raxtax` but can't comply with the license terms (e.g. closed source commercial use) contact Alexandros Stamatakis via <stamatak@ics.forth.gr> for a commercial license.

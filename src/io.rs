@@ -143,8 +143,7 @@ pub struct Args {
     /// Path to the query file
     #[arg(short = 'i', long, required_unless_present = "only_db")]
     pub query_file: Option<PathBuf>,
-    /// K-mer size to use for the database and query sequences
-    /// k must be odd and 1 <= k <= 16
+    /// k-mer size must satisfy 1 <= k <= 16.
     #[arg(short = 'k', long, value_parser = clap::value_parser!(u32).range(1..=16))]
     pub kmer_size: u32,
     /// If used for mislabling analysis, you want to skip exact sequence matches
