@@ -19,10 +19,10 @@ use crate::{
 };
 
 #[cfg(feature = "huge_db")]
-type IndexType = usize;
+pub type IndexType = usize;
 
 #[cfg(not(feature = "huge_db"))]
-type IndexType = u32;
+pub type IndexType = u32;
 
 #[cfg(not(feature = "huge_db"))]
 fn check_lineage_size(db_size: usize) {

@@ -75,7 +75,6 @@ pub struct Checkpoint {
     pub progress_file: PathBuf,
     pub db_fingerprint: FileFingerprint,
     raw_confidence: bool,
-    skip_exact_matches: bool,
     tsv: bool,
     #[serde(skip)]
     pub processed_queries: HashSet<String>,
@@ -88,7 +87,6 @@ impl Checkpoint {
             progress_file: std::path::absolute(own_path.with_extension("ckp"))?,
             db_fingerprint: FileFingerprint::new(&args.database_path)?,
             raw_confidence: args.raw_confidence,
-            skip_exact_matches: args.skip_exact_matches,
             tsv: args.tsv,
             processed_queries: HashSet::new(),
         })
@@ -146,9 +144,6 @@ pub struct Args {
     /// k-mer size must satisfy 1 <= k <= 16.
     #[arg(short = 'k', long, value_parser = clap::value_parser!(u32).range(1..=16))]
     pub kmer_size: u32,
-    /// If used for mislabling analysis, you want to skip exact sequence matches
-    #[arg(long)]
-    pub skip_exact_matches: bool,
     /// Output primary result file in tsv format
     #[arg(long)]
     pub tsv: bool,
@@ -340,7 +335,6 @@ impl Args {
             Ok(fp) => {
                 self.tsv == checkpoint.tsv
                     && self.raw_confidence == checkpoint.raw_confidence
-                    && self.skip_exact_matches == checkpoint.skip_exact_matches
                     && fp == checkpoint.db_fingerprint
             }
             Err(e) => {
