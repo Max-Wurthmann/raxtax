@@ -8,7 +8,7 @@ use std::{
 use ahash::HashMap;
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use log::{log_enabled, Level};
+use log::{info, log_enabled, Level};
 use logging_timer::time;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -162,6 +162,21 @@ impl Tree {
         };
         let (bins, _): (Vec<String>, Vec<usize>) = bin_id_idx_pairs.into_iter().unzip();
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
+
+        {
+            // log the size of the k_mer_map
+            let stack_size = size_of::<Vec<Vec<IndexType>>>();
+            let outer_heap = k_mer_map.capacity() * size_of::<Vec<IndexType>>();
+            let inner_heap: usize = k_mer_map
+                .iter()
+                .map(|inner| inner.capacity() * size_of::<IndexType>())
+                .sum();
+            info!(
+                "size of k_mer_map: {} bytes of vec smart pointers, {} bytes of data, {} bytes total",
+                stack_size + outer_heap, inner_heap, stack_size + outer_heap + inner_heap
+            );
+        }
+
         Ok(Self {
             root,
             lineages,

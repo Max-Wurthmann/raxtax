@@ -1,7 +1,7 @@
 use ahash::HashSet;
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressIterator, ProgressStyle};
-use log::{log_enabled, warn, Level};
+use log::{info, log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
 use std::{io::Read, path::PathBuf};
@@ -128,7 +128,14 @@ pub fn parse_query_fasta_file(
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let mut fasta_str = String::new();
     let _ = utils::get_reader(sequence_path)?.read_to_string(&mut fasta_str);
-    parse_query_fasta_str(&fasta_str, queries_to_skip)
+    let out = parse_query_fasta_str(&fasta_str, queries_to_skip);
+    if let Ok(ref queries) = out {
+        info!(
+            "Size of queries structure: {} bytes",
+            std::mem::size_of_val(queries)
+        );
+    }
+    out
 }
 
 fn parse_query_fasta_str(
