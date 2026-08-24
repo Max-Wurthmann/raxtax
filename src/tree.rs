@@ -5,7 +5,6 @@ use std::{
     path::PathBuf,
 };
 
-use ahash::HashMap;
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
 use log::{info, log_enabled, Level};
@@ -41,7 +40,6 @@ pub struct Tree {
     pub root: Node,
     pub lineages: Vec<String>,
     pub bins: Vec<String>,
-    pub sequences: HashMap<Vec<u8>, Vec<IndexType>>,
 
     // for each k-mer (outer idx), the vector of seqneces (sequenceIDs) containing it
     pub k_mer_map: Vec<Vec<IndexType>>,
@@ -61,11 +59,10 @@ impl Tree {
     ) -> Result<Self> {
         check_lineage_size(labels.len());
         let mut root = Node::new(String::from("root"), 0, NodeType::Inner);
-        let mut sequence_map: HashMap<Vec<u8>, Vec<IndexType>> =
-            sequences.iter().map(|s| (s.clone(), Vec::new())).collect();
         let mut k_mer_map: Vec<Vec<IndexType>> =
             vec![Vec::new(); encoding_data.n_unique_codes as usize];
         let mut lineage_sequence_pairs = labels.into_iter().zip_eq(sequences).collect_vec();
+
         lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
         let mut confidence_idx = 0_usize;
         let _ = lineage_sequence_pairs
@@ -120,11 +117,6 @@ impl Tree {
                     NodeType::Sequence,
                 ));
                 current_node.confidence_range.1 = confidence_idx;
-
-                sequence_map
-                    .get_mut(sequence)
-                    .unwrap()
-                    .push(idx as IndexType);
 
                 for k_mer in seq_to_minenc_canon_kmer_iter(sequence, &encoding_data) {
                     k_mer_map[k_mer as usize].push(idx as IndexType);
@@ -181,7 +173,6 @@ impl Tree {
             root,
             lineages,
             bins: bins.into_iter().unique().collect_vec(),
-            sequences: sequence_map,
             k_mer_map: k_mer_map
                 .into_par_iter()
                 .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
