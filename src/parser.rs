@@ -5,7 +5,7 @@ use log::{log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, Read},
     path::PathBuf,
 };
 
@@ -15,7 +15,7 @@ use crate::{
 };
 
 pub type LineageBinPair = (String, Option<String>);
-pub type QueryRecord = (String, Vec<u8>);
+pub type LabeledSequence = (String, Vec<u8>);
 
 fn map_dna_char(ch: char) -> u8 {
     let a: u8 = 0b0001;
@@ -127,15 +127,14 @@ fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -
 
 /// Streams a query FASTA file record by record instead of loading it into
 /// memory all at once, handing out fixed-size batches of parsed queries.
-pub struct QueryBatchReader<'a> {
-    reader: BufReader<Box<dyn Read>>,
+pub struct SequenceBatchReader<'a> {
+    reader: Box<dyn BufRead>,
     pending_header: Option<String>,
-    queries_to_skip: &'a HashSet<String>,
+    seq_to_skip: &'a HashSet<String>,
 }
 
-impl<'a> QueryBatchReader<'a> {
-    fn new(reader: Box<dyn Read>, queries_to_skip: &'a HashSet<String>) -> Result<Self> {
-        let mut reader = BufReader::new(reader);
+impl<'a> SequenceBatchReader<'a> {
+    pub fn new(mut reader: Box<dyn BufRead>, seq_to_skip: &'a HashSet<String>) -> Result<Self> {
         let mut line = String::new();
         let pending_header = loop {
             line.clear();
@@ -151,16 +150,16 @@ impl<'a> QueryBatchReader<'a> {
                 None => bail!("Not a valid FASTA file"),
             }
         };
-        Ok(QueryBatchReader {
+        Ok(SequenceBatchReader {
             reader,
             pending_header: Some(pending_header),
-            queries_to_skip,
+            seq_to_skip,
         })
     }
 
     /// Reads and returns up to `batch_size` queries. Returns `Ok(None)` once
     /// the file has been fully consumed.
-    pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<QueryRecord>>> {
+    pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<LabeledSequence>>> {
         let mut batch = Vec::with_capacity(batch_size);
         let mut line = String::new();
         while batch.len() < batch_size {
@@ -183,7 +182,7 @@ impl<'a> QueryBatchReader<'a> {
                 }
                 sequence.extend(trimmed.chars().map(|c| -> u8 { map_dna_char(c) }));
             }
-            if !self.queries_to_skip.contains(&label) {
+            if !self.seq_to_skip.contains(&label) {
                 batch.push((label, sequence));
             }
         }
@@ -193,13 +192,6 @@ impl<'a> QueryBatchReader<'a> {
             Ok(Some(batch))
         }
     }
-}
-
-pub fn open_query_batch_reader<'a>(
-    sequence_path: &PathBuf,
-    queries_to_skip: &'a HashSet<String>,
-) -> Result<QueryBatchReader<'a>> {
-    QueryBatchReader::new(utils::get_reader(sequence_path)?, queries_to_skip)
 }
 
 #[cfg(test)]
@@ -215,7 +207,7 @@ mod tests {
 
     use std::io::Cursor;
 
-    use super::{parse_reference_fasta_str, QueryBatchReader};
+    use super::{parse_reference_fasta_str, SequenceBatchReader};
 
     #[test]
     fn test_str_parser() {
@@ -283,14 +275,15 @@ ATACGCTTTGCGT";
         let skip = HashSet::new();
         let fasta_str = r">label1
 AAACCCTTTGGGA";
-        let mut reader = QueryBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
+        let mut reader = SequenceBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
         let batch = reader.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
-        let mut reader2 = QueryBatchReader::new(Box::new(Cursor::new(fasta_str2)), &skip).unwrap();
+        let mut reader2 =
+            SequenceBatchReader::new(Box::new(Cursor::new(fasta_str2)), &skip).unwrap();
         let batch2 = reader2.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch2[0];
         assert_eq!(
@@ -304,7 +297,7 @@ ACGTWSMKRYBDHVN";
         let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n>q3\nGGGG\n>q4\nTTTT\n";
         let mut skip = HashSet::new();
         skip.insert("q2".to_string());
-        let mut reader = QueryBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
+        let mut reader = SequenceBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
 
         let batch1 = reader.next_batch(2).unwrap().unwrap();
         assert_eq!(

@@ -6,7 +6,7 @@ use log::Level;
 use logging_timer::timer;
 use raxtax::io::FileFingerprint;
 use raxtax::io::{self, ResultsToPrint};
-use raxtax::parser;
+use raxtax::parser::{parse_reference_fasta_file, SequenceBatchReader};
 use raxtax::raxtax::{raxtax, RaxtaxSettings};
 use raxtax::utils::{self, KMerEncodingData};
 use std::io::Write;
@@ -65,8 +65,8 @@ fn main() {
 
     // Parse reference database
     let (store_db, tree) =
-        parser::parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data)
-            .unwrap_or_else(|e| {
+        parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data).unwrap_or_else(
+            |e| {
                 utils::report_error(
                     e,
                     format!(
@@ -75,7 +75,8 @@ fn main() {
                     ),
                 );
                 exit(exitcode::NOINPUT);
-            });
+            },
+        );
     if store_db && !args.skip_db {
         match args.get_db_output() {
             Ok((db_output, db_path)) => {
@@ -141,13 +142,17 @@ fn main() {
 
     // Open the query file for batched, streaming parsing
     let query_file = args.query_file.clone().unwrap();
-    let mut query_reader =
-        parser::open_query_batch_reader(&query_file, &checkpoint.processed_queries).unwrap_or_else(
-            |e| {
-                utils::report_error(e, format!("Failed to parse {}", query_file.display()));
-                exit(exitcode::NOINPUT);
-            },
-        );
+    let mut query_reader = SequenceBatchReader::new(
+        utils::get_reader(&query_file).unwrap_or_else(|e| {
+            utils::report_error(e, format!("Failed to open {}", query_file.display()));
+            exit(exitcode::NOINPUT);
+        }),
+        &checkpoint.processed_queries,
+    )
+    .unwrap_or_else(|e| {
+        utils::report_error(e, format!("Failed to parse {}", query_file.display()));
+        exit(exitcode::NOINPUT);
+    });
 
     while let Some(batch) = query_reader
         .next_batch(args.query_batch_size)

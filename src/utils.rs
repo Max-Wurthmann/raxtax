@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::File,
-    io::{BufReader, Read},
+    io::{BufRead, BufReader},
     path::PathBuf,
 };
 
@@ -94,7 +94,7 @@ pub fn encode(kmer: u32, rev_compl_kmer: u32, encoding_data: &KMerEncodingData) 
 
     let mut kmer_code = if common_prefix_length > k {
         // is p palindrome
-        debug_assert!(k % 2 == 0, "palindrome can not occur with odd k");
+        debug_assert!(k.is_multiple_of(2), "palindrome can not occur with odd k");
         debug_assert!(
             common_prefix_length == 32,
             "palindrome should have common prefix length of 32"
@@ -311,7 +311,7 @@ pub fn seq_to_8mers(sequence: &[u8]) -> Vec<u16> {
     k_mers.into_iter().sorted().collect_vec()
 }
 
-pub fn get_reader(path: &PathBuf) -> Result<Box<dyn Read>> {
+pub fn get_reader(path: &PathBuf) -> Result<Box<dyn BufRead>> {
     let file_type = match path.extension() {
         Some(ext) => match ext.to_str() {
             Some(ext_str) => ext_str.to_ascii_lowercase(),
