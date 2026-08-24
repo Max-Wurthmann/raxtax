@@ -148,16 +148,28 @@ fn main() {
         }
         Ok(())
     });
-    let ok = (|| -> Result<()> {
-        loop {
-            let batch = query_reader.next_batch(args.query_batch_size)?;
-            if batch.is_empty() {
-                break;
-            }
-            raxtax(&batch, &tree, rayon_chunk_size, &sender, settings)?;
+
+    loop {
+        let batch = query_reader
+            .next_batch(args.query_batch_size)
+            .unwrap_or_else(|e| {
+                utils::report_error(e, format!("Failed to parse {}", query_file.display()));
+                exit(exitcode::NOINPUT);
+            });
+        if batch.is_empty() {
+            break;
         }
-        Ok(())
-    })();
+        if let Err(e) = raxtax(&batch, &tree, rayon_chunk_size, &sender, settings) {
+            utils::report_error(
+                    e,
+                    "Error while sending results to IO-thread!\n
+                        Rerun raxtax to continue from the last checkpoint.\n
+                        If the problem persists, please report this issue at: https://github.com/noahares/raxtax/issues",
+                );
+            exit(exitcode::TEMPFAIL);
+        }
+    }
+
     drop(sender);
     if writer_handle.join().is_err() {
         utils::report_error(
@@ -165,15 +177,6 @@ fn main() {
             "",
         );
     };
-    if let Err(e) = ok {
-        utils::report_error(
-            e,
-            "Error while sending results to IO-thread!\n
-            Rerun raxtax to continue from the last checkpoint.\n
-            If the problem persists, please report this issue at: https://github.com/noahares/raxtax/issues",
-        );
-        exit(exitcode::TEMPFAIL);
-    }
 
     if args.clean {
         checkpoint.cleanup().unwrap_or_else(|e| {
