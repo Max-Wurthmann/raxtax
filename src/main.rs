@@ -110,25 +110,22 @@ fn main() {
     }
     let settings = RaxtaxSettings::from_args(&args);
 
-    // Parse queries
-    let queries = parser::parse_query_fasta_file(
-        args.query_file.as_ref().unwrap(),
-        &checkpoint.processed_queries,
-    )
-    .unwrap_or_else(|e| {
-        utils::report_error(
-            e,
-            format!("Failed to parse {}", args.query_file.unwrap().display()),
+    // Open the query file for batched, streaming parsing
+    let query_file = args.query_file.clone().unwrap();
+    let mut query_reader =
+        parser::open_query_batch_reader(&query_file, &checkpoint.processed_queries).unwrap_or_else(
+            |e| {
+                utils::report_error(e, format!("Failed to parse {}", query_file.display()));
+                exit(exitcode::NOINPUT);
+            },
         );
-        exit(exitcode::NOINPUT);
-    });
 
     // Compute query results and output to files
     let n_threads = rayon::current_num_threads();
-    let chunk_size = if n_threads == 1 {
-        queries.len()
+    let rayon_chunk_size = if n_threads == 1 {
+        args.query_batch_size
     } else {
-        ((queries.len() / (n_threads * 10)) + 1).max(100)
+        ((args.query_batch_size / (n_threads * 10)) + 1).max(100)
     };
 
     let (sender, receiver) = crossbeam::channel::unbounded::<ResultsToPrint>();
@@ -151,7 +148,16 @@ fn main() {
         }
         Ok(())
     });
-    let ok = raxtax(&queries, &tree, chunk_size, &sender, settings);
+    let ok = (|| -> Result<()> {
+        loop {
+            let batch = query_reader.next_batch(args.query_batch_size)?;
+            if batch.is_empty() {
+                break;
+            }
+            raxtax(&batch, &tree, rayon_chunk_size, &sender, settings)?;
+        }
+        Ok(())
+    })();
     drop(sender);
     if writer_handle.join().is_err() {
         utils::report_error(

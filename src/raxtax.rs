@@ -13,7 +13,7 @@ use log::{log_enabled, Level};
 use logging_timer::{time, timer};
 use rayon::prelude::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct RaxtaxSettings {
     tsv: bool,
     binning: bool,

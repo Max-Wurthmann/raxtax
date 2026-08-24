@@ -141,6 +141,10 @@ pub struct Args {
     /// Path to the query file
     #[arg(short = 'i', long, required_unless_present = "only_db")]
     pub query_file: Option<PathBuf>,
+    /// Number of query sequences to read and process per batch.
+    /// Lower this to reduce peak memory usage for very large query files.
+    #[arg(long, default_value_t = 100_000, verbatim_doc_comment)]
+    pub query_batch_size: usize,
     /// k-mer size must satisfy 1 <= k <= 16.
     #[arg(short = 'k', long, value_parser = clap::value_parser!(u32).range(1..=16))]
     pub kmer_size: u32,

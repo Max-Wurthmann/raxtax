@@ -1,10 +1,13 @@
 use ahash::HashSet;
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressIterator, ProgressStyle};
-use log::{info, log_enabled, warn, Level};
+use log::{log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
-use std::{io::Read, path::PathBuf};
+use std::{
+    io::{BufRead, BufReader, Read},
+    path::PathBuf,
+};
 
 use crate::{
     tree::Tree,
@@ -121,60 +124,81 @@ fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -
     Tree::new(labels, sequences, encoding_data)
 }
 
-#[time("info", "Parsing Queries")]
-pub fn parse_query_fasta_file(
-    sequence_path: &PathBuf,
-    queries_to_skip: &HashSet<String>,
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut fasta_str = String::new();
-    let _ = utils::get_reader(sequence_path)?.read_to_string(&mut fasta_str);
-    let out = parse_query_fasta_str(&fasta_str, queries_to_skip);
-    if let Ok(ref queries) = out {
-        info!(
-            "Size of queries structure: {} bytes",
-            std::mem::size_of_val(queries)
-        );
-    }
-    out
+/// Streams a query FASTA file record by record instead of loading it into
+/// memory all at once, handing out fixed-size batches of parsed queries.
+pub struct QueryBatchReader<'a> {
+    reader: Box<dyn BufRead>,
+    pending_header: Option<String>,
+    queries_to_skip: &'a HashSet<String>,
 }
 
-fn parse_query_fasta_str(
-    fasta_str: &str,
-    queries_to_skip: &HashSet<String>,
-) -> Result<Vec<(String, Vec<u8>)>> {
-    if fasta_str.is_empty() {
-        bail!("File is empty")
-    }
-    let lines: Vec<String> = fasta_str
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && !l.starts_with(';'))
-        .collect();
-    if !lines[0].starts_with('>') {
-        bail!("Not a valid FASTA file")
-    }
-    let mut queries: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut current_query: (String, Vec<u8>) = (String::new(), Vec::new());
-
-    // create label and sequence vectors
-    for line in lines {
-        if let Some(label) = line.strip_prefix('>') {
-            if !current_query.1.is_empty() {
-                queries.push(current_query.clone());
-                current_query.1 = Vec::new();
+impl<'a> QueryBatchReader<'a> {
+    fn new<R: BufRead + 'static>(
+        mut reader: R,
+        queries_to_skip: &'a HashSet<String>,
+    ) -> Result<Self> {
+        let mut line = String::new();
+        let pending_header = loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                bail!("File is empty")
             }
-            current_query.0 = label.to_string();
-        } else {
-            current_query
-                .1
-                .extend(line.chars().map(|c| -> u8 { map_dna_char(c) }));
-        }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with(';') {
+                continue;
+            }
+            match trimmed.strip_prefix('>') {
+                Some(label) => break label.to_string(),
+                None => bail!("Not a valid FASTA file"),
+            }
+        };
+        Ok(QueryBatchReader {
+            reader: Box::new(reader),
+            pending_header: Some(pending_header),
+            queries_to_skip,
+        })
     }
-    queries.push(current_query);
-    Ok(queries
-        .into_iter()
-        .filter(|q| !queries_to_skip.contains(&q.0))
-        .collect())
+
+    /// Reads and returns up to `batch_size` queries. Returns an empty vector
+    /// once the file has been fully consumed.
+    pub fn next_batch(&mut self, batch_size: usize) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut batch = Vec::with_capacity(batch_size);
+        let mut line = String::new();
+        while batch.len() < batch_size {
+            let Some(label) = self.pending_header.take() else {
+                break;
+            };
+            let mut sequence = Vec::new();
+            loop {
+                line.clear();
+                if self.reader.read_line(&mut line)? == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with(';') {
+                    continue;
+                }
+                if let Some(next_label) = trimmed.strip_prefix('>') {
+                    self.pending_header = Some(next_label.to_string());
+                    break;
+                }
+                sequence.extend(trimmed.chars().map(|c| -> u8 { map_dna_char(c) }));
+            }
+            if !self.queries_to_skip.contains(&label) {
+                batch.push((label, sequence));
+            }
+        }
+        Ok(batch)
+    }
+}
+
+#[time("info", "Opening Query File")]
+pub fn open_query_batch_reader<'a>(
+    sequence_path: &PathBuf,
+    queries_to_skip: &'a HashSet<String>,
+) -> Result<QueryBatchReader<'a>> {
+    let reader = BufReader::new(utils::get_reader(sequence_path)?);
+    QueryBatchReader::new(reader, queries_to_skip)
 }
 
 #[cfg(test)]
@@ -188,7 +212,9 @@ mod tests {
         utils::{encode, reverse_complement, KMerEncodingData},
     };
 
-    use super::{parse_query_fasta_str, parse_reference_fasta_str};
+    use std::io::Cursor;
+
+    use super::{parse_reference_fasta_str, QueryBatchReader};
 
     #[test]
     fn test_str_parser() {
@@ -253,18 +279,44 @@ ATACGCTTTGCGT";
 
     #[test]
     fn test_query_parser() {
+        let skip = HashSet::new();
         let fasta_str = r">label1
 AAACCCTTTGGGA";
-        let (_, sequence) = &parse_query_fasta_str(fasta_str, &HashSet::new()).unwrap()[0];
+        let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
+        let (_, sequence) = &reader.next_batch(10).unwrap()[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
-        let (_, sequence) = &parse_query_fasta_str(fasta_str2, &HashSet::new()).unwrap()[0];
+        let mut reader2 = QueryBatchReader::new(Cursor::new(fasta_str2), &skip).unwrap();
+        let (_, sequence) = &reader2.next_batch(10).unwrap()[0];
         assert_eq!(
             sequence,
             &[1, 2, 4, 8, 9, 6, 3, 12, 5, 10, 14, 13, 11, 7, 15]
         );
+    }
+
+    #[test]
+    fn test_query_batch_reader_batches_and_skips() {
+        let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n>q3\nGGGG\n>q4\nTTTT\n";
+        let mut skip = HashSet::new();
+        skip.insert("q2".to_string());
+        let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
+
+        let batch1 = reader.next_batch(2).unwrap();
+        assert_eq!(
+            batch1.iter().map(|(l, _)| l.clone()).collect_vec(),
+            vec!["q1".to_string(), "q3".to_string()]
+        );
+
+        let batch2 = reader.next_batch(2).unwrap();
+        assert_eq!(
+            batch2.iter().map(|(l, _)| l.clone()).collect_vec(),
+            vec!["q4".to_string()]
+        );
+
+        let batch3 = reader.next_batch(2).unwrap();
+        assert!(batch3.is_empty());
     }
 
     #[test]
