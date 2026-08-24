@@ -39,11 +39,11 @@ const REVERSE: [bool; 16] = [
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KMerEncodingData {
     pub k: u8,
+    pub n_unique_codes: u32,
     unused_bits_mask: u32,
     four_to_the_k_half_plus_one: u32,
     twice_four_to_the_k_half: u32,
     remaindermasks: [u32; 19],
-    pub n_unique_codes: u32,
 }
 
 impl KMerEncodingData {
@@ -74,11 +74,11 @@ impl KMerEncodingData {
 
         Ok(Self {
             k: k as u8,
+            n_unique_codes,
             unused_bits_mask: u32::MAX >> (32 - 2 * k),
             four_to_the_k_half_plus_one: 1 << ((k / 2) * 2 + 2),
             twice_four_to_the_k_half: 1 << ((k / 2) * 2 + 1),
             remaindermasks,
-            n_unique_codes,
         })
     }
 }
