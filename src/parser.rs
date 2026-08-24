@@ -15,6 +15,7 @@ use crate::{
 };
 
 pub type LineageBinPair = (String, Option<String>);
+pub type QueryRecord = (String, Vec<u8>);
 
 fn map_dna_char(ch: char) -> u8 {
     let a: u8 = 0b0001;
@@ -159,9 +160,9 @@ impl<'a> QueryBatchReader<'a> {
         })
     }
 
-    /// Reads and returns up to `batch_size` queries. Returns an empty vector
-    /// once the file has been fully consumed.
-    pub fn next_batch(&mut self, batch_size: usize) -> Result<Vec<(String, Vec<u8>)>> {
+    /// Reads and returns up to `batch_size` queries. Returns `Ok(None)` once
+    /// the file has been fully consumed.
+    pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<QueryRecord>>> {
         let mut batch = Vec::with_capacity(batch_size);
         let mut line = String::new();
         while batch.len() < batch_size {
@@ -188,7 +189,11 @@ impl<'a> QueryBatchReader<'a> {
                 batch.push((label, sequence));
             }
         }
-        Ok(batch)
+        if batch.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(batch))
+        }
     }
 }
 
@@ -283,13 +288,15 @@ ATACGCTTTGCGT";
         let fasta_str = r">label1
 AAACCCTTTGGGA";
         let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
-        let (_, sequence) = &reader.next_batch(10).unwrap()[0];
+        let batch = reader.next_batch(10).unwrap().unwrap();
+        let (_, sequence) = &batch[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
         let mut reader2 = QueryBatchReader::new(Cursor::new(fasta_str2), &skip).unwrap();
-        let (_, sequence) = &reader2.next_batch(10).unwrap()[0];
+        let batch2 = reader2.next_batch(10).unwrap().unwrap();
+        let (_, sequence) = &batch2[0];
         assert_eq!(
             sequence,
             &[1, 2, 4, 8, 9, 6, 3, 12, 5, 10, 14, 13, 11, 7, 15]
@@ -303,20 +310,20 @@ ACGTWSMKRYBDHVN";
         skip.insert("q2".to_string());
         let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
 
-        let batch1 = reader.next_batch(2).unwrap();
+        let batch1 = reader.next_batch(2).unwrap().unwrap();
         assert_eq!(
             batch1.iter().map(|(l, _)| l.clone()).collect_vec(),
             vec!["q1".to_string(), "q3".to_string()]
         );
 
-        let batch2 = reader.next_batch(2).unwrap();
+        let batch2 = reader.next_batch(2).unwrap().unwrap();
         assert_eq!(
             batch2.iter().map(|(l, _)| l.clone()).collect_vec(),
             vec!["q4".to_string()]
         );
 
         let batch3 = reader.next_batch(2).unwrap();
-        assert!(batch3.is_empty());
+        assert!(batch3.is_none());
     }
 
     #[test]

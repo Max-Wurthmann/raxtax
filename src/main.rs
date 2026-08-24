@@ -110,16 +110,6 @@ fn main() {
     }
     let settings = RaxtaxSettings::from_args(&args);
 
-    // Open the query file for batched, streaming parsing
-    let query_file = args.query_file.clone().unwrap();
-    let mut query_reader =
-        parser::open_query_batch_reader(&query_file, &checkpoint.processed_queries).unwrap_or_else(
-            |e| {
-                utils::report_error(e, format!("Failed to parse {}", query_file.display()));
-                exit(exitcode::NOINPUT);
-            },
-        );
-
     // Compute query results and output to files
     let n_threads = rayon::current_num_threads();
     let rayon_chunk_size = if n_threads == 1 {
@@ -149,16 +139,23 @@ fn main() {
         Ok(())
     });
 
-    loop {
-        let batch = query_reader
-            .next_batch(args.query_batch_size)
-            .unwrap_or_else(|e| {
+    // Open the query file for batched, streaming parsing
+    let query_file = args.query_file.clone().unwrap();
+    let mut query_reader =
+        parser::open_query_batch_reader(&query_file, &checkpoint.processed_queries).unwrap_or_else(
+            |e| {
                 utils::report_error(e, format!("Failed to parse {}", query_file.display()));
                 exit(exitcode::NOINPUT);
-            });
-        if batch.is_empty() {
-            break;
-        }
+            },
+        );
+
+    while let Some(batch) = query_reader
+        .next_batch(args.query_batch_size)
+        .unwrap_or_else(|e| {
+            utils::report_error(e, format!("Failed to parse {}", query_file.display()));
+            exit(exitcode::NOINPUT);
+        })
+    {
         if let Err(e) = raxtax(&batch, &tree, rayon_chunk_size, &sender, settings) {
             utils::report_error(
                     e,
