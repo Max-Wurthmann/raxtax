@@ -128,16 +128,14 @@ fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -
 /// Streams a query FASTA file record by record instead of loading it into
 /// memory all at once, handing out fixed-size batches of parsed queries.
 pub struct QueryBatchReader<'a> {
-    reader: Box<dyn BufRead>,
+    reader: BufReader<Box<dyn Read>>,
     pending_header: Option<String>,
     queries_to_skip: &'a HashSet<String>,
 }
 
 impl<'a> QueryBatchReader<'a> {
-    fn new<R: BufRead + 'static>(
-        mut reader: R,
-        queries_to_skip: &'a HashSet<String>,
-    ) -> Result<Self> {
+    fn new(reader: Box<dyn Read>, queries_to_skip: &'a HashSet<String>) -> Result<Self> {
+        let mut reader = BufReader::new(reader);
         let mut line = String::new();
         let pending_header = loop {
             line.clear();
@@ -154,7 +152,7 @@ impl<'a> QueryBatchReader<'a> {
             }
         };
         Ok(QueryBatchReader {
-            reader: Box::new(reader),
+            reader,
             pending_header: Some(pending_header),
             queries_to_skip,
         })
@@ -197,13 +195,11 @@ impl<'a> QueryBatchReader<'a> {
     }
 }
 
-#[time("info", "Opening Query File")]
 pub fn open_query_batch_reader<'a>(
     sequence_path: &PathBuf,
     queries_to_skip: &'a HashSet<String>,
 ) -> Result<QueryBatchReader<'a>> {
-    let reader = BufReader::new(utils::get_reader(sequence_path)?);
-    QueryBatchReader::new(reader, queries_to_skip)
+    QueryBatchReader::new(utils::get_reader(sequence_path)?, queries_to_skip)
 }
 
 #[cfg(test)]
@@ -287,14 +283,14 @@ ATACGCTTTGCGT";
         let skip = HashSet::new();
         let fasta_str = r">label1
 AAACCCTTTGGGA";
-        let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
+        let mut reader = QueryBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
         let batch = reader.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
-        let mut reader2 = QueryBatchReader::new(Cursor::new(fasta_str2), &skip).unwrap();
+        let mut reader2 = QueryBatchReader::new(Box::new(Cursor::new(fasta_str2)), &skip).unwrap();
         let batch2 = reader2.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch2[0];
         assert_eq!(
@@ -308,7 +304,7 @@ ACGTWSMKRYBDHVN";
         let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n>q3\nGGGG\n>q4\nTTTT\n";
         let mut skip = HashSet::new();
         skip.insert("q2".to_string());
-        let mut reader = QueryBatchReader::new(Cursor::new(fasta_str), &skip).unwrap();
+        let mut reader = QueryBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
 
         let batch1 = reader.next_batch(2).unwrap().unwrap();
         assert_eq!(
