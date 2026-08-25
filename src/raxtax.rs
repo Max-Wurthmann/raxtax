@@ -3,15 +3,16 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::io::{Args, ResultsToPrint};
-use crate::lineage;
-use crate::tree::{IndexType, Tree};
-use crate::{prob, utils};
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use log::{log_enabled, Level};
 use logging_timer::{time, timer};
 use rayon::prelude::*;
+
+use crate::io::{Args, ResultsToPrint};
+use crate::lineage;
+use crate::tree::{IndexType, Tree};
+use crate::{prob, utils};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RaxtaxSettings {

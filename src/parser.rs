@@ -59,7 +59,8 @@ pub fn parse_reference_fasta_file(
         }
     }
     let mut fasta_str = String::new();
-    let _ = get_reader(sequence_path)?.read_to_string(&mut fasta_str);
+    let (_, gzipped) = classify_file(sequence_path);
+    let _ = get_reader(sequence_path, gzipped)?.read_to_string(&mut fasta_str);
     Ok((true, parse_reference_fasta_str(&fasta_str, encoding_data)?))
 }
 
@@ -278,6 +279,25 @@ pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>
     batch_size: usize,
 }
 
+impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>>>> {
+    /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
+    /// picks a FASTA or FASTQ record reader based on the file extension
+    /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
+    pub fn from_file(
+        path: &Path,
+        seq_to_skip: &'a HashSet<String>,
+        batch_size: usize,
+    ) -> Result<Self> {
+        let (format, gzipped) = classify_file(path);
+        let reader = get_reader(path, gzipped)?;
+        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>>> = match format {
+            SeqFormat::Fastq => Box::new(FastqSequenceReader::new(reader)),
+            SeqFormat::Fasta => Box::new(FastaSequenceReader::new(reader)),
+        };
+        Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
+    }
+}
+
 impl<'a, I: Iterator<Item = Result<LabeledSequence>>> BatchedSequenceReader<'a, I> {
     pub fn new(inner: I, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
         BatchedSequenceReader {
@@ -314,23 +334,9 @@ impl<'a, I: Iterator<Item = Result<LabeledSequence>>> Iterator for BatchedSequen
     }
 }
 
-impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>>>> {
-    /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
-    /// picks a FASTA or FASTQ record reader based on the file extension
-    /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
-    pub fn from_file(
-        path: &Path,
-        seq_to_skip: &'a HashSet<String>,
-        batch_size: usize,
-    ) -> Result<Self> {
-        let reader = get_reader(path)?;
-        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>>> = if is_fastq_file(path) {
-            Box::new(FastqSequenceReader::new(reader))
-        } else {
-            Box::new(FastaSequenceReader::new(reader))
-        };
-        Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
-    }
+enum SeqFormat {
+    Fasta,
+    Fastq,
 }
 
 fn extension_lowercase(path: &Path) -> String {
@@ -340,36 +346,39 @@ fn extension_lowercase(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_fastq_file(path: &Path) -> bool {
+/// Classifies `path` by its extension, transparently looking through a
+/// trailing `.gz`/`.gzip` to the format extension underneath
+/// (`.fastq`/`.fq`, or anything else defaulting to FASTA). Returns the
+/// format plus whether the file is gzip-compressed.
+fn classify_file(path: &Path) -> (SeqFormat, bool) {
     let ext = extension_lowercase(path);
-    let ext = if ext == "gz" || ext == "gzip" {
-        path.file_stem()
-            .map(PathBuf::from)
-            .map(|stem| extension_lowercase(&stem))
-            .unwrap_or_default()
-    } else {
-        ext
+    let (ext, gzipped) = match ext.as_str() {
+        "gz" | "gzip" => (
+            path.file_stem()
+                .map(PathBuf::from)
+                .map(|stem| extension_lowercase(&stem))
+                .unwrap_or_default(),
+            true,
+        ),
+        _ => (ext, false),
     };
-    matches!(ext.as_str(), "fastq" | "fq")
+    let format = match ext.as_str() {
+        "fastq" | "fq" => SeqFormat::Fastq,
+        "fasta" | "fa" | "fna" | "faa" => SeqFormat::Fasta,
+        _ => {
+            warn!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+            SeqFormat::Fasta
+        }
+    };
+    (format, gzipped)
 }
 
-fn get_reader(path: &Path) -> Result<Box<dyn BufRead>> {
-    let file_type = match path.extension() {
-        Some(ext) => match ext.to_str() {
-            Some(ext_str) => ext_str.to_ascii_lowercase(),
-            None => bail!("Extension could not be parsed!"),
-        },
-        None => "fasta".to_string(),
-    };
-
+fn get_reader(path: &Path, gzipped: bool) -> Result<Box<dyn BufRead>> {
     let file = File::open(path)?;
-
-    match file_type.as_str() {
-        "gz" | "gzip" => {
-            let reader = Box::new(GzDecoder::new(file));
-            Ok(Box::new(BufReader::new(reader)))
-        }
-        _ => Ok(Box::new(BufReader::new(file))),
+    if gzipped {
+        Ok(Box::new(BufReader::new(GzDecoder::new(file))))
+    } else {
+        Ok(Box::new(BufReader::new(file)))
     }
 }
 
