@@ -275,32 +275,41 @@ impl Iterator for FastqSequenceReader {
 pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>> {
     inner: I,
     seq_to_skip: &'a HashSet<String>,
+    batch_size: usize,
 }
 
 impl<'a, I: Iterator<Item = Result<LabeledSequence>>> BatchedSequenceReader<'a, I> {
-    pub fn new(inner: I, seq_to_skip: &'a HashSet<String>) -> Self {
-        BatchedSequenceReader { inner, seq_to_skip }
+    pub fn new(inner: I, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
+        BatchedSequenceReader {
+            inner,
+            seq_to_skip,
+            batch_size,
+        }
     }
+}
 
-    /// Reads and returns up to `batch_size` queries. Returns `Ok(None)` once
-    /// the underlying iterator has been fully consumed.
-    pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<LabeledSequence>>> {
-        let mut batch = Vec::with_capacity(batch_size);
-        while batch.len() < batch_size {
+impl<'a, I: Iterator<Item = Result<LabeledSequence>>> Iterator for BatchedSequenceReader<'a, I> {
+    type Item = Result<Vec<LabeledSequence>>;
+
+    /// Reads and returns up to `batch_size` queries. Returns `None` once the
+    /// underlying iterator has been fully consumed.
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut batch = Vec::with_capacity(self.batch_size);
+        while batch.len() < self.batch_size {
             match self.inner.next() {
                 Some(Ok((label, sequence))) => {
                     if !self.seq_to_skip.contains(&label) {
                         batch.push((label, sequence));
                     }
                 }
-                Some(Err(e)) => return Err(e),
+                Some(Err(e)) => return Some(Err(e)),
                 None => break,
             }
         }
         if batch.is_empty() {
-            Ok(None)
+            None
         } else {
-            Ok(Some(batch))
+            Some(Ok(batch))
         }
     }
 }
@@ -309,14 +318,18 @@ impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequenc
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
     /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
-    pub fn from_file(path: &PathBuf, seq_to_skip: &'a HashSet<String>) -> Result<Self> {
+    pub fn from_file(
+        path: &PathBuf,
+        seq_to_skip: &'a HashSet<String>,
+        batch_size: usize,
+    ) -> Result<Self> {
         let reader = utils::get_reader(path)?;
         let inner: Box<dyn Iterator<Item = Result<LabeledSequence>>> = if is_fastq_file(path) {
             Box::new(FastqSequenceReader::new(reader))
         } else {
             Box::new(FastaSequenceReader::new(reader))
         };
-        Ok(BatchedSequenceReader::new(inner, seq_to_skip))
+        Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
     }
 }
 
@@ -427,8 +440,9 @@ AAACCCTTTGGGA";
         let mut reader = BatchedSequenceReader::new(
             FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
             &skip,
+            10,
         );
-        let batch = reader.next_batch(10).unwrap().unwrap();
+        let batch = reader.next().unwrap().unwrap();
         let (_, sequence) = &batch[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
@@ -437,8 +451,9 @@ ACGTWSMKRYBDHVN";
         let mut reader2 = BatchedSequenceReader::new(
             FastaSequenceReader::new(Box::new(Cursor::new(fasta_str2))),
             &skip,
+            10,
         );
-        let batch2 = reader2.next_batch(10).unwrap().unwrap();
+        let batch2 = reader2.next().unwrap().unwrap();
         let (_, sequence) = &batch2[0];
         assert_eq!(
             sequence,
@@ -454,21 +469,22 @@ ACGTWSMKRYBDHVN";
         let mut reader = BatchedSequenceReader::new(
             FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
             &skip,
+            2,
         );
 
-        let batch1 = reader.next_batch(2).unwrap().unwrap();
+        let batch1 = reader.next().unwrap().unwrap();
         assert_eq!(
             batch1.iter().map(|(l, _)| l.clone()).collect_vec(),
             vec!["q1".to_string(), "q3".to_string()]
         );
 
-        let batch2 = reader.next_batch(2).unwrap().unwrap();
+        let batch2 = reader.next().unwrap().unwrap();
         assert_eq!(
             batch2.iter().map(|(l, _)| l.clone()).collect_vec(),
             vec!["q4".to_string()]
         );
 
-        let batch3 = reader.next_batch(2).unwrap();
+        let batch3 = reader.next();
         assert!(batch3.is_none());
     }
 
@@ -505,13 +521,14 @@ ACGTWSMKRYBDHVN";
         let mut reader = BatchedSequenceReader::new(
             FastqSequenceReader::new(Box::new(Cursor::new(fastq_str))),
             &skip,
+            10,
         );
-        let batch = reader.next_batch(10).unwrap().unwrap();
+        let batch = reader.next().unwrap().unwrap();
         assert_eq!(
             batch.iter().map(|(l, _)| l.clone()).collect_vec(),
             vec!["q1".to_string(), "q2".to_string()]
         );
-        assert!(reader.next_batch(10).unwrap().is_none());
+        assert!(reader.next().is_none());
     }
 
     #[test]
@@ -614,8 +631,8 @@ AAACCCCGG";
         let fasta_path = dir.join("raxtax_test_from_file.fasta");
         std::fs::write(&fasta_path, ">q1\nAAAA\n").unwrap();
         let skip = HashSet::new();
-        let mut reader = BatchedSequenceReader::from_file(&fasta_path, &skip).unwrap();
-        let batch = reader.next_batch(10).unwrap().unwrap();
+        let mut reader = BatchedSequenceReader::from_file(&fasta_path, &skip, 10).unwrap();
+        let batch = reader.next().unwrap().unwrap();
         assert_eq!(batch, vec![("q1".to_string(), vec![1, 1, 1, 1])]);
         std::fs::remove_file(&fasta_path).unwrap();
 
@@ -624,8 +641,8 @@ AAACCCCGG";
         let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         encoder.write_all(b"@q1\nCCCC\n+\nIIII\n").unwrap();
         encoder.finish().unwrap();
-        let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, &skip).unwrap();
-        let batch = reader.next_batch(10).unwrap().unwrap();
+        let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, &skip, 10).unwrap();
+        let batch = reader.next().unwrap().unwrap();
         assert_eq!(batch, vec![("q1".to_string(), vec![2, 2, 2, 2])]);
         std::fs::remove_file(&fastq_gz_path).unwrap();
     }

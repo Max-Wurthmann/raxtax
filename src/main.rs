@@ -142,20 +142,21 @@ fn main() {
 
     // Open the query file for batched, streaming parsing
     let query_file = args.query_file.clone().unwrap();
-    let mut query_reader =
-        BatchedSequenceReader::from_file(&query_file, &checkpoint.processed_queries)
-            .unwrap_or_else(|e| {
-                utils::report_error(e, format!("Failed to open {}", query_file.display()));
-                exit(exitcode::NOINPUT);
-            });
+    let query_reader = BatchedSequenceReader::from_file(
+        &query_file,
+        &checkpoint.processed_queries,
+        args.query_batch_size,
+    )
+    .unwrap_or_else(|e| {
+        utils::report_error(e, format!("Failed to open {}", query_file.display()));
+        exit(exitcode::NOINPUT);
+    });
 
-    while let Some(batch) = query_reader
-        .next_batch(args.query_batch_size)
-        .unwrap_or_else(|e| {
+    for batch in query_reader {
+        let batch = batch.unwrap_or_else(|e| {
             utils::report_error(e, format!("Failed to parse {}", query_file.display()));
             exit(exitcode::NOINPUT);
-        })
-    {
+        });
         if let Err(e) = raxtax(&batch, &tree, rayon_chunk_size, &sender, settings) {
             utils::report_error(
                     e,
