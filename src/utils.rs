@@ -1,13 +1,7 @@
-use std::{
-    collections::HashSet,
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
+use std::collections::HashSet;
 
 use anyhow::{bail, Result};
 use bitvec::prelude::*;
-use flate2::read::GzDecoder;
 use itertools::Itertools;
 use log::{log_enabled, warn};
 use serde::{Deserialize, Serialize};
@@ -309,26 +303,6 @@ pub fn seq_to_8mers(sequence: &[u8]) -> Vec<u16> {
         }
     });
     k_mers.into_iter().sorted().collect_vec()
-}
-
-pub fn get_reader(path: &PathBuf) -> Result<Box<dyn BufRead>> {
-    let file_type = match path.extension() {
-        Some(ext) => match ext.to_str() {
-            Some(ext_str) => ext_str.to_ascii_lowercase(),
-            None => bail!("Extension could not be parsed!"),
-        },
-        None => "fasta".to_string(),
-    };
-
-    let file = File::open(path)?;
-
-    match file_type.as_str() {
-        "gz" | "gzip" => {
-            let reader = Box::new(GzDecoder::new(file));
-            Ok(Box::new(BufReader::new(reader)))
-        }
-        _ => Ok(Box::new(BufReader::new(file))),
-    }
 }
 
 pub fn get_results(results: &[lineage::EvaluationResult<'_, '_>]) -> String {
