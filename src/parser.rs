@@ -228,15 +228,24 @@ impl Iterator for FastqSequenceReader {
     type Item = Result<LabeledSequence>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        match Self::read_line(&mut *self.reader, &mut self.header) {
+            Err(e) => return Some(Err(e)),
+            Ok(None) => return None,
+            Ok(Some(())) => {}
+        }
+
         for line in [
-            &mut self.header,
             &mut self.sequence_line,
             &mut self.plus_line,
             &mut self.quality_line,
         ] {
             match Self::read_line(&mut *self.reader, line) {
                 Err(e) => return Some(Err(e)),
-                Ok(None) => return None,
+                Ok(None) => {
+                    return Some(Err(anyhow!(
+                        "Unexpected EOF reached while reading FASTQ file"
+                    )))
+                }
                 Ok(Some(())) => {}
             }
         }
@@ -244,6 +253,7 @@ impl Iterator for FastqSequenceReader {
         let Some(label) = self.header.trim().strip_prefix('@') else {
             return Some(Err(anyhow!("Not a valid FASTQ file")));
         };
+
         let Some(_) = self.plus_line.trim().strip_prefix('+') else {
             return Some(Err(anyhow!("Not a valid FASTQ file")));
         };
