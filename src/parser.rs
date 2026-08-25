@@ -197,19 +197,30 @@ impl Iterator for FastaSequenceReader {
 /// FASTQ convention produced by sequencers and downstream tools.
 pub struct FastqSequenceReader {
     reader: Box<dyn BufRead>,
+    header: String,
+    sequence_line: String,
+    plus_line: String,
+    quality_line: String,
 }
 
 impl FastqSequenceReader {
     pub fn new(reader: Box<dyn BufRead>) -> Self {
-        FastqSequenceReader { reader }
+        FastqSequenceReader {
+            reader,
+            header: String::new(),
+            sequence_line: String::new(),
+            plus_line: String::new(),
+            quality_line: String::new(),
+        }
     }
 
-    fn read_required_line(&mut self, context: &str) -> Result<String> {
-        let mut line = String::new();
-        if self.reader.read_line(&mut line)? == 0 {
-            bail!("Unexpected end of FASTQ file, expected {context}");
+    fn read_line(reader: &mut dyn BufRead, line: &mut String) -> Result<Option<()>> {
+        line.clear();
+        match reader.read_line(line) {
+            Err(e) => Err(e.into()),
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(Some(())),
         }
-        Ok(line)
     }
 }
 
@@ -217,44 +228,34 @@ impl Iterator for FastqSequenceReader {
     type Item = Result<LabeledSequence>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut header = String::new();
-        loop {
-            header.clear();
-            match self.reader.read_line(&mut header) {
-                Ok(0) => return None,
-                Ok(_) => {}
-                Err(e) => return Some(Err(e.into())),
+        for line in [
+            &mut self.header,
+            &mut self.sequence_line,
+            &mut self.plus_line,
+            &mut self.quality_line,
+        ] {
+            match Self::read_line(&mut *self.reader, line) {
+                Err(e) => return Some(Err(e)),
+                Ok(None) => return None,
+                Ok(Some(())) => {}
             }
-            if !header.trim().is_empty() {
-                break;
-            }
         }
-        let label = match header.trim().strip_prefix('@') {
-            Some(label) => label.to_string(),
-            None => return Some(Err(anyhow!("Not a valid FASTQ file"))),
+
+        let Some(label) = self.header.trim().strip_prefix('@') else {
+            return Some(Err(anyhow!("Not a valid FASTQ file")));
         };
-        let sequence_line = match self.read_required_line("sequence line") {
-            Ok(line) => line,
-            Err(e) => return Some(Err(e)),
+        let Some(_) = self.plus_line.trim().strip_prefix('+') else {
+            return Some(Err(anyhow!("Not a valid FASTQ file")));
         };
-        let separator_line = match self.read_required_line("'+' separator") {
-            Ok(line) => line,
-            Err(e) => return Some(Err(e)),
-        };
-        if !separator_line.trim_start().starts_with('+') {
-            return Some(Err(anyhow!(
-                "Not a valid FASTQ file: expected '+' separator for record {label}"
-            )));
-        }
-        if let Err(e) = self.read_required_line("quality line") {
-            return Some(Err(e));
-        }
-        let sequence = sequence_line
+
+        let sequence = self
+            .sequence_line
             .trim()
             .chars()
             .map(|c| -> u8 { map_dna_char(c) })
             .collect();
-        Some(Ok((label, sequence)))
+
+        Some(Ok((label.to_string(), sequence)))
     }
 }
 
