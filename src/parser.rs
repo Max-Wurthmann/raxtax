@@ -1,5 +1,5 @@
 use ahash::HashSet;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use indicatif::{ProgressIterator, ProgressStyle};
 use log::{log_enabled, warn, Level};
 use logging_timer::{time, timer};
@@ -125,65 +125,165 @@ fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -
     Tree::new(labels, sequences, encoding_data)
 }
 
-/// Streams a query FASTA file record by record instead of loading it into
-/// memory all at once, handing out fixed-size batches of parsed queries.
-pub struct SequenceBatchReader<'a> {
+/// Streams labeled sequences out of a FASTA file, record by record.
+pub struct FastaSequenceReader {
     reader: Box<dyn BufRead>,
-    pending_header: Option<String>,
-    seq_to_skip: &'a HashSet<String>,
+    next_header: Option<String>,
+    line: String,
 }
 
-impl<'a> SequenceBatchReader<'a> {
-    pub fn new(mut reader: Box<dyn BufRead>, seq_to_skip: &'a HashSet<String>) -> Result<Self> {
-        let mut line = String::new();
-        let pending_header = loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
-                bail!("File is empty")
+impl FastaSequenceReader {
+    pub fn new(reader: Box<dyn BufRead>) -> Self {
+        FastaSequenceReader {
+            reader,
+            next_header: None,
+            line: String::new(),
+        }
+    }
+
+    /// Advances `self.line` to the next non-empty, non-comment line.
+    /// Returns `Ok(Some(()))` when such a line was found, `Ok(None)` on EOF.
+    fn read_next_line(&mut self) -> Result<Option<()>> {
+        loop {
+            self.line.clear();
+            if self.reader.read_line(&mut self.line)? == 0 {
+                return Ok(None);
             }
-            let trimmed = line.trim();
+            let trimmed = self.line.trim();
             if trimmed.is_empty() || trimmed.starts_with(';') {
                 continue;
             }
-            match trimmed.strip_prefix('>') {
-                Some(label) => break label.to_string(),
-                None => bail!("Not a valid FASTA file"),
-            }
+            return Ok(Some(()));
+        }
+    }
+}
+
+impl Iterator for FastaSequenceReader {
+    type Item = Result<LabeledSequence>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let label = match self.next_header.take() {
+            Some(label) => label,
+            None => match self.read_next_line() {
+                Ok(Some(())) => match self.line.trim().strip_prefix('>') {
+                    Some(label) => label.to_string(),
+                    None => return Some(Err(anyhow!("Not a valid FASTA file"))),
+                },
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            },
         };
-        Ok(SequenceBatchReader {
-            reader,
-            pending_header: Some(pending_header),
-            seq_to_skip,
-        })
+        let mut sequence = Vec::new();
+        loop {
+            match self.read_next_line() {
+                Ok(Some(())) => {}
+                Ok(None) => break,
+                Err(e) => return Some(Err(e)),
+            }
+            let trimmed = self.line.trim();
+            if let Some(next_label) = trimmed.strip_prefix('>') {
+                self.next_header = Some(next_label.to_string());
+                break;
+            }
+            sequence.extend(trimmed.chars().map(|c| -> u8 { map_dna_char(c) }));
+        }
+        Some(Ok((label, sequence)))
+    }
+}
+
+/// Streams labeled sequences out of a FASTQ file, record by record.
+/// Each record is expected to span exactly four lines (header, sequence,
+/// `+` separator, quality), which covers the near-universal single-line
+/// FASTQ convention produced by sequencers and downstream tools.
+pub struct FastqSequenceReader {
+    reader: Box<dyn BufRead>,
+}
+
+impl FastqSequenceReader {
+    pub fn new(reader: Box<dyn BufRead>) -> Self {
+        FastqSequenceReader { reader }
+    }
+
+    fn read_required_line(&mut self, context: &str) -> Result<String> {
+        let mut line = String::new();
+        if self.reader.read_line(&mut line)? == 0 {
+            bail!("Unexpected end of FASTQ file, expected {context}");
+        }
+        Ok(line)
+    }
+}
+
+impl Iterator for FastqSequenceReader {
+    type Item = Result<LabeledSequence>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut header = String::new();
+        loop {
+            header.clear();
+            match self.reader.read_line(&mut header) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(e) => return Some(Err(e.into())),
+            }
+            if !header.trim().is_empty() {
+                break;
+            }
+        }
+        let label = match header.trim().strip_prefix('@') {
+            Some(label) => label.to_string(),
+            None => return Some(Err(anyhow!("Not a valid FASTQ file"))),
+        };
+        let sequence_line = match self.read_required_line("sequence line") {
+            Ok(line) => line,
+            Err(e) => return Some(Err(e)),
+        };
+        let separator_line = match self.read_required_line("'+' separator") {
+            Ok(line) => line,
+            Err(e) => return Some(Err(e)),
+        };
+        if !separator_line.trim_start().starts_with('+') {
+            return Some(Err(anyhow!(
+                "Not a valid FASTQ file: expected '+' separator for record {label}"
+            )));
+        }
+        if let Err(e) = self.read_required_line("quality line") {
+            return Some(Err(e));
+        }
+        let sequence = sequence_line
+            .trim()
+            .chars()
+            .map(|c| -> u8 { map_dna_char(c) })
+            .collect();
+        Some(Ok((label, sequence)))
+    }
+}
+
+/// Wraps any iterator of labeled sequences (as produced by
+/// [`FastaSequenceReader`] or [`FastqSequenceReader`]) and hands out
+/// fixed-size batches instead of loading the whole file into memory.
+pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>> {
+    inner: I,
+    seq_to_skip: &'a HashSet<String>,
+}
+
+impl<'a, I: Iterator<Item = Result<LabeledSequence>>> BatchedSequenceReader<'a, I> {
+    pub fn new(inner: I, seq_to_skip: &'a HashSet<String>) -> Self {
+        BatchedSequenceReader { inner, seq_to_skip }
     }
 
     /// Reads and returns up to `batch_size` queries. Returns `Ok(None)` once
-    /// the file has been fully consumed.
+    /// the underlying iterator has been fully consumed.
     pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<LabeledSequence>>> {
         let mut batch = Vec::with_capacity(batch_size);
-        let mut line = String::new();
         while batch.len() < batch_size {
-            let Some(label) = self.pending_header.take() else {
-                break;
-            };
-            let mut sequence = Vec::new();
-            loop {
-                line.clear();
-                if self.reader.read_line(&mut line)? == 0 {
-                    break;
+            match self.inner.next() {
+                Some(Ok((label, sequence))) => {
+                    if !self.seq_to_skip.contains(&label) {
+                        batch.push((label, sequence));
+                    }
                 }
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with(';') {
-                    continue;
-                }
-                if let Some(next_label) = trimmed.strip_prefix('>') {
-                    self.pending_header = Some(next_label.to_string());
-                    break;
-                }
-                sequence.extend(trimmed.chars().map(|c| -> u8 { map_dna_char(c) }));
-            }
-            if !self.seq_to_skip.contains(&label) {
-                batch.push((label, sequence));
+                Some(Err(e)) => return Err(e),
+                None => break,
             }
         }
         if batch.is_empty() {
@@ -192,6 +292,42 @@ impl<'a> SequenceBatchReader<'a> {
             Ok(Some(batch))
         }
     }
+}
+
+impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>>>> {
+    /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
+    /// picks a FASTA or FASTQ record reader based on the file extension
+    /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
+    pub fn from_file(path: &PathBuf, seq_to_skip: &'a HashSet<String>) -> Result<Self> {
+        let reader = utils::get_reader(path)?;
+        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>>> = if is_fastq_file(path) {
+            Box::new(FastqSequenceReader::new(reader))
+        } else {
+            Box::new(FastaSequenceReader::new(reader))
+        };
+        Ok(BatchedSequenceReader::new(inner, seq_to_skip))
+    }
+}
+
+fn extension_lowercase(path: &std::path::Path) -> String {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_fastq_file(path: &PathBuf) -> bool {
+    let ext = extension_lowercase(path);
+    let ext = if ext == "gz" || ext == "gzip" {
+        path.file_stem()
+            .map(PathBuf::from)
+            .map(|stem| extension_lowercase(&stem))
+            .unwrap_or_default()
+    } else {
+        ext
+    };
+    matches!(ext.as_str(), "fastq" | "fq")
 }
 
 #[cfg(test)]
@@ -205,9 +341,11 @@ mod tests {
         utils::{encode, reverse_complement, KMerEncodingData},
     };
 
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
 
-    use super::{parse_reference_fasta_str, SequenceBatchReader};
+    use super::{
+        parse_reference_fasta_str, BatchedSequenceReader, FastaSequenceReader, FastqSequenceReader,
+    };
 
     #[test]
     fn test_str_parser() {
@@ -275,15 +413,20 @@ ATACGCTTTGCGT";
         let skip = HashSet::new();
         let fasta_str = r">label1
 AAACCCTTTGGGA";
-        let mut reader = SequenceBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
+        let mut reader = BatchedSequenceReader::new(
+            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            &skip,
+        );
         let batch = reader.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch[0];
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
-        let mut reader2 =
-            SequenceBatchReader::new(Box::new(Cursor::new(fasta_str2)), &skip).unwrap();
+        let mut reader2 = BatchedSequenceReader::new(
+            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str2))),
+            &skip,
+        );
         let batch2 = reader2.next_batch(10).unwrap().unwrap();
         let (_, sequence) = &batch2[0];
         assert_eq!(
@@ -297,7 +440,10 @@ ACGTWSMKRYBDHVN";
         let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n>q3\nGGGG\n>q4\nTTTT\n";
         let mut skip = HashSet::new();
         skip.insert("q2".to_string());
-        let mut reader = SequenceBatchReader::new(Box::new(Cursor::new(fasta_str)), &skip).unwrap();
+        let mut reader = BatchedSequenceReader::new(
+            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            &skip,
+        );
 
         let batch1 = reader.next_batch(2).unwrap().unwrap();
         assert_eq!(
@@ -313,6 +459,48 @@ ACGTWSMKRYBDHVN";
 
         let batch3 = reader.next_batch(2).unwrap();
         assert!(batch3.is_none());
+    }
+
+    #[test]
+    fn test_fasta_sequence_reader_iterates_records() {
+        let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n";
+        let mut reader = FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)));
+        let (label1, seq1) = reader.next().unwrap().unwrap();
+        assert_eq!(label1, "q1");
+        assert_eq!(seq1, &[1, 1, 1, 1]);
+        let (label2, seq2) = reader.next().unwrap().unwrap();
+        assert_eq!(label2, "q2");
+        assert_eq!(seq2, &[2, 2, 2, 2]);
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn test_fastq_sequence_reader_iterates_records() {
+        let fastq_str = "@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+q2\nIIII\n";
+        let mut reader = FastqSequenceReader::new(Box::new(Cursor::new(fastq_str)));
+        let (label1, seq1) = reader.next().unwrap().unwrap();
+        assert_eq!(label1, "q1");
+        assert_eq!(seq1, &[1, 1, 1, 1]);
+        let (label2, seq2) = reader.next().unwrap().unwrap();
+        assert_eq!(label2, "q2");
+        assert_eq!(seq2, &[2, 2, 2, 2]);
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn test_batched_sequence_reader_over_fastq() {
+        let fastq_str = "@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+\nIIII\n";
+        let skip = HashSet::new();
+        let mut reader = BatchedSequenceReader::new(
+            FastqSequenceReader::new(Box::new(Cursor::new(fastq_str))),
+            &skip,
+        );
+        let batch = reader.next_batch(10).unwrap().unwrap();
+        assert_eq!(
+            batch.iter().map(|(l, _)| l.clone()).collect_vec(),
+            vec!["q1".to_string(), "q2".to_string()]
+        );
+        assert!(reader.next_batch(10).unwrap().is_none());
     }
 
     #[test]
@@ -406,5 +594,28 @@ AAACCCCGG";
                 .collect_vec(),
             &[&2, &3]
         );
+    }
+
+    #[test]
+    fn test_batched_sequence_reader_from_file_picks_format_and_decompresses() {
+        let dir = std::env::temp_dir();
+
+        let fasta_path = dir.join("raxtax_test_from_file.fasta");
+        std::fs::write(&fasta_path, ">q1\nAAAA\n").unwrap();
+        let skip = HashSet::new();
+        let mut reader = BatchedSequenceReader::from_file(&fasta_path, &skip).unwrap();
+        let batch = reader.next_batch(10).unwrap().unwrap();
+        assert_eq!(batch, vec![("q1".to_string(), vec![1, 1, 1, 1])]);
+        std::fs::remove_file(&fasta_path).unwrap();
+
+        let fastq_gz_path = dir.join("raxtax_test_from_file.fastq.gz");
+        let file = std::fs::File::create(&fastq_gz_path).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder.write_all(b"@q1\nCCCC\n+\nIIII\n").unwrap();
+        encoder.finish().unwrap();
+        let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, &skip).unwrap();
+        let batch = reader.next_batch(10).unwrap().unwrap();
+        assert_eq!(batch, vec![("q1".to_string(), vec![2, 2, 2, 2])]);
+        std::fs::remove_file(&fastq_gz_path).unwrap();
     }
 }
