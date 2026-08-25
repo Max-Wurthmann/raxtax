@@ -6,7 +6,7 @@ use logging_timer::{time, timer};
 use regex::Regex;
 use std::{
     io::{BufRead, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use crate::{
@@ -340,8 +340,7 @@ fn extension_lowercase(path: &std::path::Path) -> String {
         .to_ascii_lowercase()
 }
 
-#[allow(clippy::ptr_arg)]
-fn is_fastq_file(path: &PathBuf) -> bool {
+fn is_fastq_file(path: &Path) -> bool {
     let ext = extension_lowercase(path);
     let ext = if ext == "gz" || ext == "gzip" {
         path.file_stem()
