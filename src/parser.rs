@@ -2,7 +2,7 @@ use ahash::HashSet;
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressIterator, ProgressStyle};
-use log::{log_enabled, warn, Level};
+use log::{info, log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
 use std::io::Read;
@@ -366,7 +366,7 @@ fn classify_file(path: &Path) -> (SeqFormat, bool) {
         "fastq" | "fq" => SeqFormat::Fastq,
         "fasta" | "fa" | "fna" | "faa" => SeqFormat::Fasta,
         _ => {
-            warn!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+            info!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
             SeqFormat::Fasta
         }
     };
