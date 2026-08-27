@@ -155,6 +155,11 @@ impl Tree {
         let (bins, _): (Vec<String>, Vec<usize>) = bin_id_idx_pairs.into_iter().unzip();
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
 
+        k_mer_map = k_mer_map
+            .into_par_iter()
+            .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
+            .collect();
+
         {
             // log the size of the k_mer_map
             let stack_size = size_of::<Vec<Vec<IndexType>>>();
@@ -173,10 +178,7 @@ impl Tree {
             root,
             lineages,
             bins: bins.into_iter().unique().collect_vec(),
-            k_mer_map: k_mer_map
-                .into_par_iter()
-                .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
-                .collect(),
+            k_mer_map,
             encoding_data,
             bin_idx_to_lineage_idxs,
             lineage_idx_to_bin_idx,
