@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{HumanBytes, ProgressIterator, ProgressStyle};
 use itertools::Itertools;
 use log::{info, log_enabled, Level};
 use logging_timer::time;
@@ -170,7 +170,7 @@ impl Tree {
                 .sum();
             info!(
                 "size of k_mer_map: {} bytes of vec smart pointers, {} bytes of data, {} bytes total",
-                stack_size + outer_heap, inner_heap, stack_size + outer_heap + inner_heap
+                HumanBytes((stack_size + outer_heap) as u64), HumanBytes((inner_heap) as u64),HumanBytes((stack_size + outer_heap + inner_heap) as u64)
             );
         }
 
