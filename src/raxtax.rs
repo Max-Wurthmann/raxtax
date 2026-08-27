@@ -1,11 +1,9 @@
 use anyhow::Result;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use log::{log_enabled, Level};
+use log::Level;
 use logging_timer::{time, timer};
 use rayon::prelude::*;
 
@@ -40,7 +38,6 @@ pub fn raxtax(
     sender: &crossbeam::channel::Sender<ResultsToPrint>,
     settings: RaxtaxSettings,
 ) -> Result<()> {
-    let warnings = AtomicBool::new(false);
     let pb = ProgressBar::new(queries.len() as u64)
         .with_style(
             ProgressStyle::with_template(
@@ -50,8 +47,8 @@ pub fn raxtax(
             .progress_chars("##-"),
         )
         .with_message("Running Queries...");
-
     pb.enable_steady_tick(Duration::from_millis(100));
+
     queries
         .par_chunks(chunk_size)
         .flat_map(|q| {
@@ -118,8 +115,5 @@ pub fn raxtax(
         })
         .collect::<Result<Vec<()>>>()?;
 
-    if warnings.load(Ordering::Relaxed) && log_enabled!(Level::Warn) {
-        eprintln!("\x1b[33m[WARN ]\x1b[0m Exact matches for some queries have differnt taxonomic lineages! Check the log file for more information!");
-    }
     Ok(())
 }
