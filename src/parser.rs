@@ -366,7 +366,10 @@ fn classify_file(path: &Path) -> (SeqFormat, bool) {
         "fastq" | "fq" => SeqFormat::Fastq,
         "fasta" | "fa" | "fna" | "faa" => SeqFormat::Fasta,
         _ => {
-            info!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+            if log_enabled!(Level::Info) {
+                eprintln!("[INFO ] Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+                info!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+            }
             SeqFormat::Fasta
         }
     };
