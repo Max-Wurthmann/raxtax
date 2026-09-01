@@ -7,7 +7,7 @@ use std::{
 
 use indicatif::{HumanBytes, ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use log::{info, log_enabled, Level};
+use log::{debug, log_enabled, Level};
 use logging_timer::time;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -160,7 +160,7 @@ impl Tree {
             .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
             .collect();
 
-        {
+        if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
             let stack_size = size_of::<Vec<Vec<IndexType>>>();
             let outer_heap = k_mer_map.capacity() * size_of::<Vec<IndexType>>();
@@ -168,9 +168,12 @@ impl Tree {
                 .iter()
                 .map(|inner| inner.capacity() * size_of::<IndexType>())
                 .sum();
-            info!(
-                "size of k_mer_map: {} bytes of vec smart pointers, {} bytes of data, {} bytes total",
-                HumanBytes((stack_size + outer_heap) as u64), HumanBytes((inner_heap) as u64),HumanBytes((stack_size + outer_heap + inner_heap) as u64)
+
+            debug!(
+                "size of k_mer_map: {} of vec smart pointers, {} of data, {} total",
+                HumanBytes((stack_size + outer_heap) as u64),
+                HumanBytes((inner_heap) as u64),
+                HumanBytes((stack_size + outer_heap + inner_heap) as u64)
             );
         }
 
