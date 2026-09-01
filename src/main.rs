@@ -111,9 +111,11 @@ fn main() {
     }
     let settings = RaxtaxSettings::from_args(&args);
 
-    // Compute query results and output to files
+    // Compute query results and output to files.
+    // Feed the streaming reader small batches so the `par_bridge` inside
+    // `raxtax` has a fine-grained unit of work to balance across the pool.
     let n_threads = rayon::current_num_threads();
-    let rayon_chunk_size = if n_threads == 1 {
+    let batch_size = if n_threads == 1 {
         args.query_batch_size
     } else {
         ((args.query_batch_size / (n_threads * 10)) + 1).max(100)
@@ -142,30 +144,25 @@ fn main() {
 
     // Open the query file for batched, streaming parsing
     let query_file = args.query_file.clone().unwrap();
-    let query_reader = BatchedSequenceReader::from_file(
-        &query_file,
-        &checkpoint.processed_queries,
-        args.query_batch_size,
-    )
-    .unwrap_or_else(|e| {
-        utils::report_error(e, format!("Failed to open {}", query_file.display()));
-        exit(exitcode::NOINPUT);
-    });
+    let query_reader =
+        BatchedSequenceReader::from_file(&query_file, &checkpoint.processed_queries, batch_size)
+            .unwrap_or_else(|e| {
+                utils::report_error(e, format!("Failed to open {}", query_file.display()));
+                exit(exitcode::NOINPUT);
+            });
 
-    for batch in query_reader {
-        let batch = batch.unwrap_or_else(|e| {
-            utils::report_error(e, format!("Failed to parse {}", query_file.display()));
-            exit(exitcode::NOINPUT);
-        });
-        if let Err(e) = raxtax(&batch, &tree, rayon_chunk_size, &sender, settings) {
+    if let Err(e) = raxtax(query_reader, &tree, &sender, settings) {
+        if e.is::<crossbeam::channel::SendError<ResultsToPrint>>() {
             utils::report_error(
-                    e,
-                    "Error while sending results to IO-thread!\n
+                e,
+                "Error while sending results to IO-thread!\n
                         Rerun raxtax to continue from the last checkpoint.\n
                         If the problem persists, please report this issue at: https://github.com/noahares/raxtax/issues",
-                );
+            );
             exit(exitcode::TEMPFAIL);
         }
+        utils::report_error(e, format!("Failed to parse {}", query_file.display()));
+        exit(exitcode::NOINPUT);
     }
 
     drop(sender);

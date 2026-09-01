@@ -128,13 +128,13 @@ fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -
 
 /// Streams labeled sequences out of a FASTA file, record by record.
 pub struct FastaSequenceReader {
-    reader: Box<dyn BufRead>,
+    reader: Box<dyn BufRead + Send>,
     next_header: Option<String>,
     line: String,
 }
 
 impl FastaSequenceReader {
-    pub fn new(reader: Box<dyn BufRead>) -> Self {
+    pub fn new(reader: Box<dyn BufRead + Send>) -> Self {
         FastaSequenceReader {
             reader,
             next_header: None,
@@ -197,7 +197,7 @@ impl Iterator for FastaSequenceReader {
 /// `+` separator, quality), which covers the near-universal single-line
 /// FASTQ convention produced by sequencers and downstream tools.
 pub struct FastqSequenceReader {
-    reader: Box<dyn BufRead>,
+    reader: Box<dyn BufRead + Send>,
     header: String,
     sequence_line: String,
     plus_line: String,
@@ -205,7 +205,7 @@ pub struct FastqSequenceReader {
 }
 
 impl FastqSequenceReader {
-    pub fn new(reader: Box<dyn BufRead>) -> Self {
+    pub fn new(reader: Box<dyn BufRead + Send>) -> Self {
         FastqSequenceReader {
             reader,
             header: String::new(),
@@ -279,7 +279,7 @@ pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>
     batch_size: usize,
 }
 
-impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>>>> {
+impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>> + Send>> {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
     /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
@@ -290,7 +290,7 @@ impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequenc
     ) -> Result<Self> {
         let (format, gzipped) = classify_file(path);
         let reader = get_reader(path, gzipped)?;
-        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>>> = match format {
+        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>> + Send> = match format {
             SeqFormat::Fastq => Box::new(FastqSequenceReader::new(reader)),
             SeqFormat::Fasta => Box::new(FastaSequenceReader::new(reader)),
         };
@@ -376,7 +376,7 @@ fn classify_file(path: &Path) -> (SeqFormat, bool) {
     (format, gzipped)
 }
 
-fn get_reader(path: &Path, gzipped: bool) -> Result<Box<dyn BufRead>> {
+fn get_reader(path: &Path, gzipped: bool) -> Result<Box<dyn BufRead + Send>> {
     let file = File::open(path)?;
     if gzipped {
         Ok(Box::new(BufReader::new(GzDecoder::new(file))))
