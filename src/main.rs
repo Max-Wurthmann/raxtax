@@ -118,7 +118,7 @@ fn main() {
     let batch_size = if n_threads == 1 {
         args.query_batch_size
     } else {
-        ((args.query_batch_size / (n_threads * 10)) + 1).max(100)
+        ((args.query_batch_size / n_threads) + 1).max(100)
     };
 
     let (sender, receiver) = crossbeam::channel::unbounded::<ResultsToPrint>();

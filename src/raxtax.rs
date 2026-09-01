@@ -47,11 +47,8 @@ where
         .with_message("Running Queries...");
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // One parallel pipeline over the whole query stream: `par_bridge` pulls the
-    // next batch from the sequential reader on a free worker (overlapping
-    // parsing/decompression with classification) instead of a serial loop of
-    // fork-join batches. `try_for_each_init` hands each worker a reusable
-    // intersection buffer (intersection size, as u16, with each reference).
+    // `par_bridge` is used to convert the iterator into a parallel iterator, uses a mutex guard.
+    // The `try_for_each_init` to init a threadlocal reusable buffer and fail fast on any error.
     batches.par_bridge().try_for_each_init(
         || vec![0u16; tree.num_tips],
         |intersect_buffer: &mut Vec<u16>, batch| -> Result<()> {
