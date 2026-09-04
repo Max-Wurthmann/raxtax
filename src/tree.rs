@@ -155,10 +155,12 @@ impl Tree {
         let (bins, _): (Vec<String>, Vec<usize>) = bin_id_idx_pairs.into_iter().unzip();
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
 
-        k_mer_map = k_mer_map
-            .into_par_iter()
-            .map(|seqs| seqs.into_iter().unique().sorted().collect_vec())
-            .collect();
+        // per k-mer: sort for locality, dedup and shrik to save memory
+        k_mer_map.par_iter_mut().for_each(|seqs| {
+            seqs.sort_unstable();
+            seqs.dedup();
+            seqs.shrink_to_fit();
+        });
 
         if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
