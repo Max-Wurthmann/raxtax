@@ -156,11 +156,17 @@ impl Tree {
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
 
         // per k-mer: sort for locality, dedup and shrik to save memory
+        // important to do this inplace for memory efficiency
         k_mer_map.par_iter_mut().for_each(|seqs| {
             seqs.sort_unstable();
             seqs.dedup();
-            seqs.shrink_to_fit();
         });
+
+        // High memory usage observed when parallelizing this step, possibly due to fragmentation of the heap.
+        // can possibly also be parallelized but not sure if it would be worth it.
+        // doing this shrink to fit can save significant memory, especially as this lives in memory
+        // for the entire lifetime of the program.
+        k_mer_map.iter_mut().for_each(|seqs| seqs.shrink_to_fit());
 
         if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
