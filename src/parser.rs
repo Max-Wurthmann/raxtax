@@ -42,6 +42,8 @@ fn map_dna_char(ch: char) -> u8 {
     }
 }
 
+/// Parses a reference FASTA or FASTQ file into a [`Tree`],
+/// next to the generated tree, returns a boolean indicating whether the tree was parsed from the file or loaded from a cached tree file. If the cached tree file is present but has a different k-mer size than specified, it will be ignored and the reference file will be reparsed. The function also logs warnings if the k-mer sizes do not match, and returns an error if there are issues reading the file
 #[time("info", "Parsing References")]
 pub fn parse_reference_fasta_file(
     sequence_path: &PathBuf,
@@ -62,11 +64,11 @@ pub fn parse_reference_fasta_file(
     Ok((true, parse_reference_records(records, encoding_data)?))
 }
 
-/// Consumes an iterator of labeled reference sequences (as produced by
-/// [`FastaSequenceReader`] or [`FastqSequenceReader`]), splits each label's
-/// `tax=<lineage>;<bin>?` annotation off and builds the resulting `Tree`.
-fn parse_reference_records<I: Iterator<Item = Result<LabeledSequence>>>(
-    records: I,
+/// Consumes a [`SequenceReader`] of labeled reference sequences, splits each
+/// label's `tax=<lineage>;<bin>?` annotation off and builds the resulting
+/// `Tree`.
+fn parse_reference_records(
+    records: SequenceReader,
     encoding_data: KMerEncodingData,
 ) -> Result<Tree> {
     let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
@@ -252,15 +254,6 @@ impl Iterator for FastqSequenceReader {
     }
 }
 
-/// Wraps any iterator of labeled sequences (as produced by
-/// [`FastaSequenceReader`] or [`FastqSequenceReader`]) and hands out
-/// fixed-size batches instead of loading the whole file into memory.
-pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>> {
-    inner: I,
-    seq_to_skip: &'a HashSet<String>,
-    batch_size: usize,
-}
-
 /// Either a FASTA or FASTQ record reader. Statically dispatches `Iterator::next`
 /// to whichever [`SequenceReader::from_file`] picked, avoiding the heap
 /// allocation and dynamic dispatch of a `Box<dyn Iterator>`.
@@ -294,7 +287,15 @@ impl Iterator for SequenceReader {
     }
 }
 
-impl<'a> BatchedSequenceReader<'a, SequenceReader> {
+/// Batches labeled sequences from an underlying iterator into fixed-size
+/// batches, skipping any sequences whose labels are in `seq_to_skip`.
+pub struct BatchedSequenceReader<'a> {
+    inner: SequenceReader,
+    seq_to_skip: &'a HashSet<String>,
+    batch_size: usize,
+}
+
+impl<'a> BatchedSequenceReader<'a> {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
     /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
@@ -308,13 +309,8 @@ impl<'a> BatchedSequenceReader<'a, SequenceReader> {
         let inner = SequenceReader::from_file(path)?;
         Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
     }
-}
 
-impl<'a, I> BatchedSequenceReader<'a, I>
-where
-    I: Iterator<Item = Result<LabeledSequence>>,
-{
-    pub fn new(inner: I, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
+    pub fn new(inner: SequenceReader, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
         BatchedSequenceReader {
             inner,
             seq_to_skip,
@@ -323,10 +319,7 @@ where
     }
 }
 
-impl<'a, I> Iterator for BatchedSequenceReader<'a, I>
-where
-    I: Iterator<Item = Result<LabeledSequence>>,
-{
+impl<'a> Iterator for BatchedSequenceReader<'a> {
     type Item = Result<Vec<LabeledSequence>>;
 
     /// Reads and returns up to `batch_size` queries. Returns `None` once the
@@ -418,7 +411,7 @@ mod tests {
 
     use super::{
         parse_reference_fasta_file, parse_reference_records, BatchedSequenceReader,
-        FastaSequenceReader, FastqSequenceReader,
+        FastaSequenceReader, FastqSequenceReader, SequenceReader,
     };
 
     #[test]
@@ -444,7 +437,7 @@ GTGCGCTATGCGA
 ATACGCTTTGCGT";
 
         let tree = parse_reference_records(
-            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();
@@ -492,7 +485,7 @@ ATACGCTTTGCGT";
         let fasta_str = r">label1
 AAACCCTTTGGGA";
         let mut reader = BatchedSequenceReader::new(
-            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             &skip,
             10,
         );
@@ -503,7 +496,7 @@ AAACCCTTTGGGA";
         let fasta_str2 = r">label1
 ACGTWSMKRYBDHVN";
         let mut reader2 = BatchedSequenceReader::new(
-            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str2))),
+            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str2)))),
             &skip,
             10,
         );
@@ -521,7 +514,7 @@ ACGTWSMKRYBDHVN";
         let mut skip = HashSet::new();
         skip.insert("q2".to_string());
         let mut reader = BatchedSequenceReader::new(
-            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             &skip,
             2,
         );
@@ -573,7 +566,7 @@ ACGTWSMKRYBDHVN";
         let fastq_str = "@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+\nIIII\n";
         let skip = HashSet::new();
         let mut reader = BatchedSequenceReader::new(
-            FastqSequenceReader::new(Box::new(Cursor::new(fastq_str))),
+            SequenceReader::Fastq(FastqSequenceReader::new(Box::new(Cursor::new(fastq_str)))),
             &skip,
             10,
         );
@@ -613,7 +606,7 @@ AAACCCCGG";
          */
 
         let Tree { k_mer_map, .. } = parse_reference_records(
-            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();
