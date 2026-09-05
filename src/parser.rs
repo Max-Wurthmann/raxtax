@@ -1,11 +1,11 @@
 use ahash::HashSet;
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, log_enabled, warn, Level};
 use logging_timer::{time, timer};
 use regex::Regex;
-use std::io::Read;
+use std::time::Duration;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
@@ -58,71 +58,53 @@ pub fn parse_reference_fasta_file(
             return Ok((false, tree));
         }
     }
-    let mut fasta_str = String::new();
-    let (_, gzipped) = classify_file(sequence_path);
-    let _ = get_reader(sequence_path, gzipped)?.read_to_string(&mut fasta_str);
-    Ok((true, parse_reference_fasta_str(&fasta_str, encoding_data)?))
+    let records = SequenceReader::from_file(sequence_path)?;
+    Ok((true, parse_reference_records(records, encoding_data)?))
 }
 
-fn parse_reference_fasta_str(fasta_str: &str, encoding_data: KMerEncodingData) -> Result<Tree> {
-    if fasta_str.is_empty() {
-        bail!("File is empty")
-    }
+/// Consumes an iterator of labeled reference sequences (as produced by
+/// [`FastaSequenceReader`] or [`FastqSequenceReader`]), splits each label's
+/// `tax=<lineage>;<bin>?` annotation off and builds the resulting `Tree`.
+fn parse_reference_records<I: Iterator<Item = Result<LabeledSequence>>>(
+    records: I,
+    encoding_data: KMerEncodingData,
+) -> Result<Tree> {
     let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
-    let (labels, sequences) = {
+    let (labels, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) = {
         let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
-        let lines: Vec<String> = fasta_str
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty() && !l.starts_with(';'))
-            .collect();
-        if !lines[0].starts_with('>') {
-            bail!("Not a valid FASTA file")
-        }
+        let pb = ProgressBar::new_spinner()
+            .with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {pos:>9} references [{per_sec}] {msg}",
+                )
+                .unwrap(),
+            )
+            .with_message("Parsing Reference...");
+        pb.enable_steady_tick(Duration::from_millis(100));
+
         let mut labels: Vec<LineageBinPair> = Vec::new();
         let mut sequences: Vec<Vec<u8>> = Vec::new();
-        let mut current_sequence = Vec::<u8>::new();
-        // let mut bin_id_to_lineages: HashMap<String, Vec<String>> = HashMap::new();
-
-        // create label and sequence vectors
-        lines
-            .into_iter()
-            .progress_with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
-                )
-                .unwrap()
-                .progress_chars("##-"),
-            )
-            .with_message("Parsing Reference...")
-            .map(|line| -> Result<()> {
-                if let Some(label) = line.strip_prefix('>') {
-                    let caps = regex.captures(label).context(format!(
-                        "Unexpected taxonomical annotation detected in label {label}"
-                    ))?;
-                    let lineage = caps
-                        .get(1)
-                        .context(format!("No taxonomic string found in label {label}"))?
-                        .as_str()
-                        .to_owned();
-                    let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
-                    labels.push((lineage, bin));
-                    if !current_sequence.is_empty() {
-                        sequences.push(current_sequence.clone());
-                        current_sequence = Vec::new();
-                    }
-                } else {
-                    current_sequence.extend(line.chars().map(|c| -> u8 { map_dna_char(c) }));
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<()>>>()?;
-        sequences.push(current_sequence);
-        if labels.len() != sequences.len() {
-            bail!("Number of sequences does not match number of labels")
+        for record in records {
+            let (label, sequence) = record?;
+            let caps = regex.captures(&label).context(format!(
+                "Unexpected taxonomical annotation detected in label {label}"
+            ))?;
+            let lineage = caps
+                .get(1)
+                .context(format!("No taxonomic string found in label {label}"))?
+                .as_str()
+                .to_owned();
+            let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
+            labels.push((lineage, bin));
+            sequences.push(sequence);
+            pb.inc(1);
         }
+        pb.finish();
         (labels, sequences)
     };
+    if labels.is_empty() {
+        bail!("File is empty")
+    }
     Tree::new(labels, sequences, encoding_data)
 }
 
@@ -279,26 +261,59 @@ pub struct BatchedSequenceReader<'a, I: Iterator<Item = Result<LabeledSequence>>
     batch_size: usize,
 }
 
-impl<'a> BatchedSequenceReader<'a, Box<dyn Iterator<Item = Result<LabeledSequence>> + Send>> {
+/// Either a FASTA or FASTQ record reader. Statically dispatches `Iterator::next`
+/// to whichever [`SequenceReader::from_file`] picked, avoiding the heap
+/// allocation and dynamic dispatch of a `Box<dyn Iterator>`.
+pub enum SequenceReader {
+    Fasta(FastaSequenceReader),
+    Fastq(FastqSequenceReader),
+}
+
+impl SequenceReader {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
-    /// (`.fastq`/`.fq`, or `.fasta`/`.fa`/anything else defaulting to FASTA).
+    /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
+    fn from_file(path: &Path) -> Result<Self> {
+        let (format, gzipped) = classify_file(path);
+        let reader = get_reader(path, gzipped)?;
+        Ok(match format {
+            SeqFormat::Fastq => SequenceReader::Fastq(FastqSequenceReader::new(reader)),
+            SeqFormat::Fasta => SequenceReader::Fasta(FastaSequenceReader::new(reader)),
+        })
+    }
+}
+
+impl Iterator for SequenceReader {
+    type Item = Result<LabeledSequence>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            SequenceReader::Fasta(reader) => reader.next(),
+            SequenceReader::Fastq(reader) => reader.next(),
+        }
+    }
+}
+
+impl<'a> BatchedSequenceReader<'a, SequenceReader> {
+    /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
+    /// picks a FASTA or FASTQ record reader based on the file extension
+    /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
+    /// Also batches the records into fixed sizes and ingores any sequences whose labels are in
+    /// `seq_to_skip`.
     pub fn from_file(
         path: &Path,
         seq_to_skip: &'a HashSet<String>,
         batch_size: usize,
     ) -> Result<Self> {
-        let (format, gzipped) = classify_file(path);
-        let reader = get_reader(path, gzipped)?;
-        let inner: Box<dyn Iterator<Item = Result<LabeledSequence>> + Send> = match format {
-            SeqFormat::Fastq => Box::new(FastqSequenceReader::new(reader)),
-            SeqFormat::Fasta => Box::new(FastaSequenceReader::new(reader)),
-        };
+        let inner = SequenceReader::from_file(path)?;
         Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
     }
 }
 
-impl<'a, I: Iterator<Item = Result<LabeledSequence>>> BatchedSequenceReader<'a, I> {
+impl<'a, I> BatchedSequenceReader<'a, I>
+where
+    I: Iterator<Item = Result<LabeledSequence>>,
+{
     pub fn new(inner: I, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
         BatchedSequenceReader {
             inner,
@@ -308,7 +323,10 @@ impl<'a, I: Iterator<Item = Result<LabeledSequence>>> BatchedSequenceReader<'a, 
     }
 }
 
-impl<'a, I: Iterator<Item = Result<LabeledSequence>>> Iterator for BatchedSequenceReader<'a, I> {
+impl<'a, I> Iterator for BatchedSequenceReader<'a, I>
+where
+    I: Iterator<Item = Result<LabeledSequence>>,
+{
     type Item = Result<Vec<LabeledSequence>>;
 
     /// Reads and returns up to `batch_size` queries. Returns `None` once the
@@ -399,7 +417,8 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::{
-        parse_reference_fasta_str, BatchedSequenceReader, FastaSequenceReader, FastqSequenceReader,
+        parse_reference_fasta_file, parse_reference_records, BatchedSequenceReader,
+        FastaSequenceReader, FastqSequenceReader,
     };
 
     #[test]
@@ -424,7 +443,11 @@ GTGCGCTATGCGA
 >Badabing|Badabum;tax=p:Phylum2,c:Class3,o:Order3,f:Family4,g:Genus4,s:Species5;
 ATACGCTTTGCGT";
 
-        let tree = parse_reference_fasta_str(fasta_str, KMerEncodingData::new(8).unwrap()).unwrap();
+        let tree = parse_reference_records(
+            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         for (k, v) in tree.k_mer_map.iter().enumerate() {
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
@@ -589,8 +612,11 @@ AAACCCCGG";
          * 4: AAACCCCGG -> CCGGGGTTT
          */
 
-        let Tree { k_mer_map, .. } =
-            parse_reference_fasta_str(fasta_str, KMerEncodingData::new(8).unwrap()).unwrap();
+        let Tree { k_mer_map, .. } = parse_reference_records(
+            FastaSequenceReader::new(Box::new(Cursor::new(fasta_str))),
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap();
         for (k, v) in k_mer_map.iter().enumerate() {
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
@@ -676,5 +702,22 @@ AAACCCCGG";
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(batch, vec![("q1".to_string(), vec![2, 2, 2, 2])]);
         std::fs::remove_file(&fastq_gz_path).unwrap();
+    }
+
+    #[test]
+    fn test_parse_reference_fasta_file_supports_fastq() {
+        let dir = std::env::temp_dir();
+        let fastq_path = dir.join("raxtax_test_reference.fastq");
+        std::fs::write(
+            &fastq_path,
+            "@ref1;tax=p:Phylum1,c:Class1;\nAAACCCTTTGGGA\n+\nIIIIIIIIIIIII\n",
+        )
+        .unwrap();
+        let (parsed, tree) =
+            parse_reference_fasta_file(&fastq_path, KMerEncodingData::new(8).unwrap()).unwrap();
+        assert!(parsed);
+        assert_eq!(tree.lineages, vec!["p:Phylum1,c:Class1".to_string()]);
+        assert_eq!(tree.num_tips, 1);
+        std::fs::remove_file(&fastq_path).unwrap();
     }
 }
