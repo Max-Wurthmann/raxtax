@@ -38,6 +38,13 @@ bitvec = "1.0.1"
 [build-dependencies]
 chrono = "0.4.42"
 
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "count_sequences"
+harness = false
+
 [profile.ultra]
 inherits = "release"
 codegen-units = 1
