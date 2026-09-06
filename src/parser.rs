@@ -271,8 +271,8 @@ impl SequenceReader {
         let (format, gzipped) = classify_file(path);
         let reader = get_reader(path, gzipped)?;
         Ok(match format {
-            SeqFormat::Fastq => SequenceReader::Fastq(FastqSequenceReader::new(reader)),
-            SeqFormat::Fasta => SequenceReader::Fasta(FastaSequenceReader::new(reader)),
+            FileFormat::Fastq => SequenceReader::Fastq(FastqSequenceReader::new(reader)),
+            FileFormat::Fasta => SequenceReader::Fasta(FastaSequenceReader::new(reader)),
         })
     }
 }
@@ -346,7 +346,8 @@ impl<'a> Iterator for BatchedSequenceReader<'a> {
     }
 }
 
-enum SeqFormat {
+#[derive(Clone, Copy)]
+enum FileFormat {
     Fasta,
     Fastq,
 }
@@ -362,7 +363,7 @@ fn extension_lowercase(path: &Path) -> String {
 /// trailing `.gz`/`.gzip` to the format extension underneath
 /// (`.fastq`/`.fq`, or anything else defaulting to FASTA). Returns the
 /// format plus whether the file is gzip-compressed.
-fn classify_file(path: &Path) -> (SeqFormat, bool) {
+fn classify_file(path: &Path) -> (FileFormat, bool) {
     let ext = extension_lowercase(path);
     let (ext, gzipped) = match ext.as_str() {
         "gz" | "gzip" => (
@@ -375,14 +376,14 @@ fn classify_file(path: &Path) -> (SeqFormat, bool) {
         _ => (ext, false),
     };
     let format = match ext.as_str() {
-        "fastq" | "fq" => SeqFormat::Fastq,
-        "fasta" | "fa" | "fna" | "faa" => SeqFormat::Fasta,
+        "fastq" | "fq" => FileFormat::Fastq,
+        "fasta" | "fa" | "fna" | "faa" => FileFormat::Fasta,
         _ => {
             if log_enabled!(Level::Info) {
                 eprintln!("[INFO ] Unrecognized file extension {ext}, attempting to parse as FASTA file...");
                 info!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
             }
-            SeqFormat::Fasta
+            FileFormat::Fasta
         }
     };
     (format, gzipped)
@@ -420,12 +421,12 @@ fn count_chars_in_file<R: BufRead>(mut reader: R, target: u8) -> Result<usize> {
 pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
     let (format, gzipped) = classify_file(path);
     let target = match format {
-        SeqFormat::Fasta => b'>',
-        SeqFormat::Fastq => b'\n',
+        FileFormat::Fasta => b'>',
+        FileFormat::Fastq => b'\n',
     };
 
     let count = if gzipped {
-        count_chars_in_file(get_reader(path, true)?, target)
+        count_chars_in_file(get_reader(path, true)?, target)?
     } else {
         let file_len = std::fs::metadata(path)?.len();
         let n_chunks = rayon::current_num_threads()
@@ -441,13 +442,13 @@ pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
                 file.seek(SeekFrom::Start(start))?;
                 count_chars_in_file(BufReader::new(file.take(end - start)), target)
             })
-            .try_reduce(|| 0, |a, b| Ok(a + b))
+            .try_reduce(|| 0, |a, b| Ok(a + b))?
     };
 
     match format {
         // if the file is FASTQ, we counted lines and need to divide by 4 to get the number of sequences
-        SeqFormat::Fastq => count.map(|c| c / 4),
-        SeqFormat::Fasta => count,
+        FileFormat::Fastq => Ok(count / 4),
+        FileFormat::Fasta => Ok(count),
     }
 }
 
