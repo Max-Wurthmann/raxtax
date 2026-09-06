@@ -56,7 +56,7 @@ fn main() {
         utils::report_error(anyhow::Error::from(e), "Failed to set up Multithreading");
         exit(exitcode::OSERR);
     };
-    let _total_tmr = timer!(Level::Info; "Total Runtime");
+    let total_tmr = timer!(Level::Info; "Total Runtime");
 
     let encoding_data = KMerEncodingData::new(args.kmer_size).unwrap_or_else(|e| {
         utils::report_error(e, "Please provide a valid k-mer size.");
@@ -116,8 +116,11 @@ fn main() {
     }
 
     if args.only_db {
+        // need to drop the timer manually before exiting, otherwise the timer will not be printed
+        drop(total_tmr);
         exit(exitcode::OK);
     }
+
     let settings = RaxtaxSettings::from_args(&args);
 
     let n_threads = rayon::current_num_threads();
@@ -207,5 +210,7 @@ fn main() {
         });
     }
 
+    // need to drop the timer manually before exiting, otherwise the timer will not be printed
+    drop(total_tmr);
     exit(exitcode::OK);
 }
