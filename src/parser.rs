@@ -414,36 +414,41 @@ fn count_chars_in_file<R: BufRead>(mut reader: R, target: u8) -> Result<usize> {
     Ok(count)
 }
 
-/// Quickly estimates the number of sequences (records) in a FASTA/FASTQ file
-/// by counting record-start marker bytes (`>` for FASTA, `@` for FASTQ)
-/// Transparently handles `.gz`/`.gzip` compression like
-/// [`SequenceReader::from_file`]. Plain (uncompressed) files are scanned in
+/// Quickly estimates the number of sequences (records) in a FASTA/FASTQ file.
+/// Transparently handles `.gz`/`.gzip` compression. Plain (uncompressed) files are scanned in
 /// parallel across the rayon thread pool while gzipped files are scanned sequentially
 pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
     let (format, gzipped) = classify_file(path);
     let target = match format {
         SeqFormat::Fasta => b'>',
-        SeqFormat::Fastq => b'@',
+        SeqFormat::Fastq => b'\n',
     };
 
-    if gzipped {
-        return count_chars_in_file(get_reader(path, true)?, target);
-    }
+    let count = if gzipped {
+        count_chars_in_file(get_reader(path, true)?, target)
+    } else {
+        let file_len = std::fs::metadata(path)?.len();
+        let n_chunks = rayon::current_num_threads()
+            .min(file_len.max(1) as usize)
+            .max(1);
 
-    let file_len = std::fs::metadata(path)?.len();
-    let n_chunks = rayon::current_num_threads()
-        .min(file_len.max(1) as usize)
-        .max(1);
-    (0..n_chunks)
-        .into_par_iter()
-        .map(|i| -> Result<usize> {
-            let start = file_len * i as u64 / n_chunks as u64;
-            let end = file_len * (i + 1) as u64 / n_chunks as u64;
-            let mut file = File::open(path)?;
-            file.seek(SeekFrom::Start(start))?;
-            count_chars_in_file(BufReader::new(file.take(end - start)), target)
-        })
-        .try_reduce(|| 0, |a, b| Ok(a + b))
+        (0..n_chunks)
+            .into_par_iter()
+            .map(|i| -> Result<usize> {
+                let start = file_len * i as u64 / n_chunks as u64;
+                let end = file_len * (i + 1) as u64 / n_chunks as u64;
+                let mut file = File::open(path)?;
+                file.seek(SeekFrom::Start(start))?;
+                count_chars_in_file(BufReader::new(file.take(end - start)), target)
+            })
+            .try_reduce(|| 0, |a, b| Ok(a + b))
+    };
+
+    match format {
+        // if the file is FASTQ, we counted lines and need to divide by 4 to get the number of sequences
+        SeqFormat::Fastq => count.map(|c| c / 4),
+        SeqFormat::Fasta => count,
+    }
 }
 
 #[cfg(test)]
