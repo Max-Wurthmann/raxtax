@@ -58,11 +58,13 @@ where
                 let tmr = timer!(Level::Debug; "K-mer Intersections");
                 let k_mers =
                     utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data);
-                assert!(u16::try_from(k_mers.len()).is_ok());
+                debug_assert!(u16::try_from(k_mers.len()).is_ok());
                 let num_trials = k_mers.len() / 2;
                 for query_kmer in &k_mers {
                     tree.k_mer_map[*query_kmer as usize].iter().for_each(
                         |sequence_id: &IndexType| {
+                            // cast is necessary, because sequence_id is u32 if not cfg(huge_db)
+                            #[allow(clippy::unnecessary_cast)]
                             unsafe {
                                 *intersect_buffer.get_unchecked_mut(*sequence_id as usize) += 1
                             };
