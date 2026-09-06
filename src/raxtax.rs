@@ -35,14 +35,18 @@ pub fn raxtax<I>(
     tree: &Tree,
     sender: &crossbeam::channel::Sender<ResultsToPrint>,
     settings: RaxtaxSettings,
+    n_queries: usize,
 ) -> Result<()>
 where
     I: Iterator<Item = Result<Vec<(String, Vec<u8>)>>> + Send,
 {
-    let pb = ProgressBar::new_spinner()
+    let pb = ProgressBar::new(n_queries as u64)
         .with_style(
-            ProgressStyle::with_template("[{elapsed_precise}] {pos:>9} queries [{per_sec}] {msg}")
-                .unwrap(),
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
         )
         .with_message("Running Queries...");
     pb.enable_steady_tick(Duration::from_millis(100));

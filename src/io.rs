@@ -141,13 +141,18 @@ pub struct Args {
     /// Path to the query file
     #[arg(short = 'i', long, required_unless_present = "only_db")]
     pub query_file: Option<PathBuf>,
-    /// Number of query sequences to read and process per batch.
-    /// Lower this to reduce peak memory usage for very large query files.
-    #[arg(long, default_value_t = 100_000, verbatim_doc_comment)]
-    pub query_batch_size: usize,
     /// k-mer size must satisfy 1 <= k <= 16.
     #[arg(short = 'k', long, value_parser = clap::value_parser!(u32).range(1..=16))]
     pub kmer_size: u32,
+    /// Number of threads
+    /// If 0, uses all available threads
+    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
+    pub threads: usize,
+    /// Number of queries to read and process per batch.
+    /// Lower this to reduce peak memory usage for very large query files.
+    /// Passing 0 is equivalent to passing the number of all queries in the query file.
+    #[arg(long, default_value_t = 0, verbatim_doc_comment)]
+    pub query_batch_size: usize,
     /// Output primary result file in tsv format
     #[arg(long)]
     pub tsv: bool,
@@ -166,10 +171,6 @@ pub struct Args {
     /// Don't adjust confidence values for 1 exact match
     #[arg(long)]
     pub raw_confidence: bool,
-    /// Number of threads
-    /// If 0, uses all available threads
-    #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
-    pub threads: usize,
     /// Output prefix
     #[arg(short = 'o', long, default_value = "raxtax")]
     pub prefix: PathBuf,

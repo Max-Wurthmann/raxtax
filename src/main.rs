@@ -6,7 +6,7 @@ use log::Level;
 use logging_timer::timer;
 use raxtax::io::FileFingerprint;
 use raxtax::io::{self, ResultsToPrint};
-use raxtax::parser::{parse_reference_fasta_file, BatchedSequenceReader};
+use raxtax::parser::{count_sequences_in_file, parse_reference_fasta_file, BatchedSequenceReader};
 use raxtax::raxtax::{raxtax, RaxtaxSettings};
 use raxtax::utils::{self, KMerEncodingData};
 use std::io::Write;
@@ -63,10 +63,20 @@ fn main() {
         exit(exitcode::USAGE);
     });
 
-    // Parse reference database
+    // Count number of reference sequences
+    let n_references = count_sequences_in_file(&args.database_path).unwrap_or_else(|e| {
+        utils::report_error(
+            e,
+            format!(
+                "Failed to count sequences in {}",
+                args.database_path.display()
+            ),
+        );
+        exit(exitcode::NOINPUT);
+    });
     let (store_db, tree) =
-        parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data).unwrap_or_else(
-            |e| {
+        parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data, n_references)
+            .unwrap_or_else(|e| {
                 utils::report_error(
                     e,
                     format!(
@@ -75,8 +85,7 @@ fn main() {
                     ),
                 );
                 exit(exitcode::NOINPUT);
-            },
-        );
+            });
     if store_db && !args.skip_db {
         match args.get_db_output() {
             Ok((db_output, db_path)) => {
@@ -111,14 +120,32 @@ fn main() {
     }
     let settings = RaxtaxSettings::from_args(&args);
 
-    // Compute query results and output to files.
-    // Feed the streaming reader small batches so the `par_bridge` inside
-    // `raxtax` has a fine-grained unit of work to balance across the pool.
     let n_threads = rayon::current_num_threads();
-    let batch_size = if n_threads == 1 {
-        args.query_batch_size
-    } else {
-        ((args.query_batch_size / n_threads) + 1).max(100)
+
+    let query_file = args.query_file.clone().unwrap();
+    let n_queries = count_sequences_in_file(&query_file).unwrap_or_else(|e| {
+        utils::report_error(
+            e,
+            format!("Failed to count sequences in {}", query_file.display()),
+        );
+        exit(exitcode::NOINPUT);
+    });
+    let n_queries_remaining = n_queries.saturating_sub(checkpoint.processed_queries.len());
+
+    let batch_size = {
+        let mut b_size = if args.query_batch_size == 0 {
+            n_queries_remaining
+        } else {
+            args.query_batch_size.min(n_queries_remaining)
+        };
+
+        if n_threads > 1 {
+            // dividy by n_threads to properly distribute the work across threads
+            // divide by 10 to improve load balancing
+            b_size /= 10 * n_threads
+        }
+
+        b_size.max(100)
     };
 
     let (sender, receiver) = crossbeam::channel::unbounded::<ResultsToPrint>();
@@ -142,8 +169,6 @@ fn main() {
         Ok(())
     });
 
-    // Open the query file for batched, streaming parsing
-    let query_file = args.query_file.clone().unwrap();
     let query_reader =
         BatchedSequenceReader::from_file(&query_file, &checkpoint.processed_queries, batch_size)
             .unwrap_or_else(|e| {
@@ -151,7 +176,7 @@ fn main() {
                 exit(exitcode::NOINPUT);
             });
 
-    if let Err(e) = raxtax(query_reader, &tree, &sender, settings) {
+    if let Err(e) = raxtax(query_reader, &tree, &sender, settings, n_queries_remaining) {
         if e.is::<crossbeam::channel::SendError<ResultsToPrint>>() {
             utils::report_error(
                 e,

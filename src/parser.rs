@@ -49,6 +49,7 @@ fn map_dna_char(ch: char) -> u8 {
 pub fn parse_reference_fasta_file(
     sequence_path: &PathBuf,
     encoding_data: KMerEncodingData,
+    n_references: usize,
 ) -> Result<(bool, Tree)> {
     if let Ok(tree) = Tree::load_from_file(sequence_path) {
         if tree.encoding_data != encoding_data {
@@ -62,7 +63,10 @@ pub fn parse_reference_fasta_file(
         }
     }
     let records = SequenceReader::from_file(sequence_path)?;
-    Ok((true, parse_reference_records(records, encoding_data)?))
+    Ok((
+        true,
+        parse_reference_records(records, encoding_data, n_references)?,
+    ))
 }
 
 /// Consumes a [`SequenceReader`] of labeled reference sequences, splits each
@@ -71,16 +75,18 @@ pub fn parse_reference_fasta_file(
 fn parse_reference_records(
     records: SequenceReader,
     encoding_data: KMerEncodingData,
+    n_references: usize,
 ) -> Result<Tree> {
     let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
     let (labels, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) = {
         let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
-        let pb = ProgressBar::new_spinner()
+        let pb = ProgressBar::new(n_references as u64)
             .with_style(
                 ProgressStyle::with_template(
-                    "[{elapsed_precise}] {pos:>9} references [{per_sec}] {msg}",
+                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
                 )
-                .unwrap(),
+                .unwrap()
+                .progress_chars("##-"),
             )
             .with_message("Parsing Reference...");
         pb.enable_steady_tick(Duration::from_millis(100));
@@ -496,6 +502,7 @@ ATACGCTTTGCGT";
         let tree = parse_reference_records(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             KMerEncodingData::new(8).unwrap(),
+            6,
         )
         .unwrap();
         for (k, v) in tree.k_mer_map.iter().enumerate() {
@@ -665,6 +672,7 @@ AAACCCCGG";
         let Tree { k_mer_map, .. } = parse_reference_records(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             KMerEncodingData::new(8).unwrap(),
+            5,
         )
         .unwrap();
         for (k, v) in k_mer_map.iter().enumerate() {
@@ -764,7 +772,7 @@ AAACCCCGG";
         )
         .unwrap();
         let (parsed, tree) =
-            parse_reference_fasta_file(&fastq_path, KMerEncodingData::new(8).unwrap()).unwrap();
+            parse_reference_fasta_file(&fastq_path, KMerEncodingData::new(8).unwrap(), 1).unwrap();
         assert!(parsed);
         assert_eq!(tree.lineages, vec!["p:Phylum1,c:Class1".to_string()]);
         assert_eq!(tree.num_tips, 1);
