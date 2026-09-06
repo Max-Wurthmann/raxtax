@@ -4,11 +4,12 @@ use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, log_enabled, warn, Level};
 use logging_timer::{time, timer};
+use rayon::prelude::*;
 use regex::Regex;
 use std::time::Duration;
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -396,6 +397,55 @@ fn get_reader(path: &Path, gzipped: bool) -> Result<Box<dyn BufRead + Send>> {
     }
 }
 
+/// Counts occurrences of `target` in `reader`, scanning in large buffered
+/// chunks with SIMD-accelerated counting (mirrors the `linecount` crate's
+/// `count_lines`, generalized to an arbitrary byte).
+fn count_chars_in_file<R: BufRead>(mut reader: R, target: u8) -> Result<usize> {
+    let mut count = 0;
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            break;
+        }
+        count += bytecount::count(buf, target);
+        let len = buf.len();
+        reader.consume(len);
+    }
+    Ok(count)
+}
+
+/// Quickly estimates the number of sequences (records) in a FASTA/FASTQ file
+/// by counting record-start marker bytes (`>` for FASTA, `@` for FASTQ)
+/// Transparently handles `.gz`/`.gzip` compression like
+/// [`SequenceReader::from_file`]. Plain (uncompressed) files are scanned in
+/// parallel across the rayon thread pool while gzipped files are scanned sequentially
+pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
+    let (format, gzipped) = classify_file(path);
+    let target = match format {
+        SeqFormat::Fasta => b'>',
+        SeqFormat::Fastq => b'@',
+    };
+
+    if gzipped {
+        return count_chars_in_file(get_reader(path, true)?, target);
+    }
+
+    let file_len = std::fs::metadata(path)?.len();
+    let n_chunks = rayon::current_num_threads()
+        .min(file_len.max(1) as usize)
+        .max(1);
+    (0..n_chunks)
+        .into_par_iter()
+        .map(|i| -> Result<usize> {
+            let start = file_len * i as u64 / n_chunks as u64;
+            let end = file_len * (i + 1) as u64 / n_chunks as u64;
+            let mut file = File::open(path)?;
+            file.seek(SeekFrom::Start(start))?;
+            count_chars_in_file(BufReader::new(file.take(end - start)), target)
+        })
+        .try_reduce(|| 0, |a, b| Ok(a + b))
+}
+
 #[cfg(test)]
 mod tests {
     use ahash::{HashSet, HashSetExt};
@@ -410,8 +460,9 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::{
-        parse_reference_fasta_file, parse_reference_records, BatchedSequenceReader,
-        FastaSequenceReader, FastqSequenceReader, SequenceReader,
+        count_chars_in_file, count_sequences_in_file, parse_reference_fasta_file,
+        parse_reference_records, BatchedSequenceReader, FastaSequenceReader, FastqSequenceReader,
+        SequenceReader,
     };
 
     #[test]
@@ -712,5 +763,58 @@ AAACCCCGG";
         assert_eq!(tree.lineages, vec!["p:Phylum1,c:Class1".to_string()]);
         assert_eq!(tree.num_tips, 1);
         std::fs::remove_file(&fastq_path).unwrap();
+    }
+
+    #[test]
+    fn test_count_chars_in_file_counts_target_byte() {
+        let data = b"some\ntext\nwith\nfour\nlines\n".to_vec();
+        let count = count_chars_in_file(Cursor::new(data), b'\n').unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_count_sequences_in_file_plain_fasta() {
+        let dir = std::env::temp_dir();
+        let fasta_path = dir.join("raxtax_test_count_sequences.fasta");
+        std::fs::write(&fasta_path, ">q1\nAAAA\n>q2\nCCCC\n>q3\nGGGG\n>q4\nTTTT\n").unwrap();
+        assert_eq!(count_sequences_in_file(&fasta_path).unwrap(), 4);
+        std::fs::remove_file(&fasta_path).unwrap();
+    }
+
+    #[test]
+    fn test_count_sequences_in_file_plain_fastq() {
+        let dir = std::env::temp_dir();
+        let fastq_path = dir.join("raxtax_test_count_sequences.fastq");
+        std::fs::write(&fastq_path, "@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+\nIIII\n").unwrap();
+        assert_eq!(count_sequences_in_file(&fastq_path).unwrap(), 2);
+        std::fs::remove_file(&fastq_path).unwrap();
+    }
+
+    #[test]
+    fn test_count_sequences_in_file_gzipped_fastq() {
+        let dir = std::env::temp_dir();
+        let fastq_gz_path = dir.join("raxtax_test_count_sequences.fastq.gz");
+        let file = std::fs::File::create(&fastq_gz_path).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder
+            .write_all(b"@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+\nIIII\n@q3\nGGGG\n+\nIIII\n")
+            .unwrap();
+        encoder.finish().unwrap();
+        assert_eq!(count_sequences_in_file(&fastq_gz_path).unwrap(), 3);
+        std::fs::remove_file(&fastq_gz_path).unwrap();
+    }
+
+    #[test]
+    fn test_count_sequences_in_file_tiny_file() {
+        let dir = std::env::temp_dir();
+        let fasta_path = dir.join("raxtax_test_count_sequences_tiny.fasta");
+        std::fs::write(&fasta_path, ">q\nA\n").unwrap();
+        assert_eq!(count_sequences_in_file(&fasta_path).unwrap(), 1);
+        std::fs::remove_file(&fasta_path).unwrap();
+
+        let empty_path = dir.join("raxtax_test_count_sequences_empty.fasta");
+        std::fs::write(&empty_path, "").unwrap();
+        assert_eq!(count_sequences_in_file(&empty_path).unwrap(), 0);
+        std::fs::remove_file(&empty_path).unwrap();
     }
 }
