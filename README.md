@@ -1,6 +1,6 @@
 # RAxTax - `raxtax` Accelerates Taxonomic Classification
 
-`raxtax` is a fast and efficient k-mer-based non-Bayesian taxonomic classifier for barcoding DNA sequences.
+`raxtax` is a fast and efficient k-mer-based non-Bayesian taxonomic classifier for DNA sequences.
 The manuscript is available at [Bioinformatics](https://doi.org/10.1093/bioinformatics/btaf620).
 This project is heavily inspired by the SINTAX algorithm [[1]](#1).
 K-mers are encoded using a minimal encoding scheme for canonical k-mers [[2]](#2).
@@ -47,25 +47,45 @@ cargo build --profile=ultra
 Usage: raxtax [OPTIONS] --database-path <DATABASE_PATH> --kmer-size <KMER_SIZE>
 
 Options:
-  -d, --database-path <DATABASE_PATH>  Path to the database fasta or bin file
-  -i, --query-file <QUERY_FILE>        Path to the query file
-  -k, --kmer-size <KMER_SIZE>          k-mer size must satisfy 1 <= k <= 16
-      --skip-exact-matches             If used for mislabling analysis, you want to skip exact sequence matches
-      --tsv                            Output primary result file in tsv format
-      --binning                        Output best taxonomic bin for each query
-      --only-db                        Create binary database and exit
-      --skip-db                        Don't create the binary database for the reference sequences
-  -c, --clean                          Remove binary database and checkpoint files after a successful run
-      --raw-confidence                 Don't adjust confidence values for 1 exact match
-  -t, --threads <THREADS>              Number of threads
-                                       If 0, uses all available threads [default: 0]
-  -o, --prefix <PREFIX>                Output prefix [default: raxtax]
-      --redo                           Force override of existing output files
-      --pin                            Use thread pinning
-  -v, --verbose...                     Increase logging verbosity
-  -q, --quiet...                       Decrease logging verbosity
-  -h, --help                           Print help
-  -V, --version                        Print version
+  -d, --database-path <DATABASE_PATH>
+          Path to the database fasta or bin file
+  -i, --query-file <QUERY_FILE>
+          Path to the query file
+  -k, --kmer-size <KMER_SIZE>
+          k-mer size must satisfy 1 <= k <= 16
+  -t, --threads <THREADS>
+          Number of threads
+          If 0, uses all available threads [default: 0]
+      --query-batch-size <QUERY_BATCH_SIZE>
+          Number of queries to read and process per batch.
+          Lower values can reduce memory usage while processing queries.
+          Passing 0 is equivalent to passing the total number of queries in the query file. [default: 0]
+      --tsv
+          Output primary result file in tsv format
+      --binning
+          Output best taxonomic bin for each query
+      --only-db
+          Create binary database and exit
+      --skip-db
+          Don't create the binary database for the reference sequences
+  -c, --clean
+          Remove binary database and checkpoint files after a successful run
+      --raw-confidence
+          Don't adjust confidence values for 1 exact match
+  -o, --prefix <PREFIX>
+          Output prefix [default: raxtax]
+      --redo
+          Force override of existing output files
+      --pin
+          Use thread pinning
+  -v, --verbose...
+          Increase logging verbosity
+  -q, --quiet...
+          Decrease logging verbosity
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ### Simple Example
@@ -79,17 +99,17 @@ From the project root (otherwise adjust the paths) run:
 
 ```sh
 # with raxtax installed
-<path/to/raxtax> -k 7 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+<path/to/raxtax> -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
 
 # from source
-cargo run --profile=ultra -- -k 7 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+cargo run --profile=ultra -- -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
 ```
 
 This creates a new folder `example/example_run` with the taxonomic assignments and confidence values for each query in `raxtax.out` and various log messages (including exact sequence matches) in `raxtax.log`.
 
 ### Input Database (`-d`)
 
-The input format for the database file is FASTA.
+The database can be provided in FASTA or FASTQ format.
 It is possible to provide the file as a Gzip archive (`.gzip` or `.gz`).
 
 Sequence identifier should have the form `tax=<lineage>;`.
@@ -99,17 +119,17 @@ We use phylum to sequence for the examples in this README to aid readability.
 For example, an entry may look like this:
 
 ```sh
-# example sequence
+# example FASTA
 >metadata;tax=Arthropoda,Insecta,Diptera,Muscidae,Musca,Musca_domestica;
 ACTCGATAC
 ```
 
 ### Input Query (`-i`)
 
-The format for query sequences is also FASTA (again, Gzip archives are supported), but more relaxed than the database format:
+The Queries can also be provided in FASTA or FASTQ format (optionally gzipped), but more relaxed than the database format:
 
 ```sh
-# example sequence
+# example FASTA
 >query1
 ACTCGATAC
 ```
@@ -135,30 +155,37 @@ To this end, we include a fourth and fifth value indicating the confidence in th
 These are again between 0 and 1, where 1 indicates high confidence.
 For more information, see the manuscript.
 
-2. `<PREFIX>/raxtax.log` is the log file where more or less useful information accumulates.
+1. `<PREFIX>/raxtax.log` is the log file where more or less useful information accumulates.
 With the default command line parameters, only warnings and errors will be collected.
 With `-v` additional information about runtime and the size of the database are printed.
 With `-vv` debug messages are also included.
 Generally, if a warning or error occurs, the program will inform you through `stderr` and refer you to the log file if needed.
 This file also contains information about exact matches and inconsistent lineages (possible mislabeling).
 
-3. (_optional_ via `--tsv`) `<PREFIX>/raxtax.tsv` is pretty much the same as the first output file but slightly more convenient for viewing in your favorite spreadsheet editor.
+2. (*optional* via `--tsv`) `<PREFIX>/raxtax.tsv` is pretty much the same as the first output file but slightly more convenient for viewing in your favorite spreadsheet editor.
 In this file, the taxonomic lineage and confidence values are interleaved, and the query sequence is also printed at the end:
 
 ```sh
 query1  Arthropoda  1.0 Insecta 1.0 Diptera 0.8 Muscidae    0.68    Musca   0.52    Musca_domestica 0.31    0.67456 0.71234 ACTCGATAC
 ```
 
-### Other Options
+## K-mer Size (-k)
 
-`--kmer-size` is a required option. It determines the length of the k-mers that are used to compare the queries to the references.
+`-k` is a required option. It determines the length of the k-mers that are used to compare the queries to the references.
 K must be between 1 and 16 (inclusive).
 Choosing large k (k >= 15) significantly increase the memory footprint of `raxtax` and is not recommended for most use cases.
-Choosing small k (k <= 5) will make the analysis less specific and therefore less accurate.
-Also note that odd k allow for more efficient representation of the k-mers in memory [[2]](#2).
+Choosing small k (k <= 5) will make the analysis less accurate.
+As a rule of thumb, we recommend k=11 for most use cases.
+If you have very long sequences (>= 1Mbp) then k>=13 might be a good choice.
+Also note that odd k allow for slightly more efficient representation of the k-mers in memory [[2]](#2).
 
-`--skip-exact-matches` may be useful when running the database against itself to identify mislabeled sequences. Per default, `raxtax` skips over exact sequences matches if there is **exactly one match** and outputs a confidence of 1.0 for the exact match.
-This option makes it so that any exact match is not considered for the analysis of a query sequence.
+### Other Options
+
+`--query-batch-size` controls how many queries are read from the query file and processed at once.
+It defaults to `0`, which is equivalent to passing the total number of queries in the query file.
+Reducing this can reduce memory usage while processing queries.
+Often however, it is not necessary to change this value.
+The memory peak often occurs while processing the database and not the queries.
 
 `--only-db` can be used if you just want to create a binary database for the reference sequences and then run `raxtax` for many different query files.
 If the reference database is large this will save significant time on repeat execution.
@@ -196,7 +223,7 @@ An error message will be displayed if too many reference sequences are used with
 ## Checkpointing
 
 Since v.1.3.0 `raxtax` comes with default checkpointing to prevent data loss in case of unforeseen crashes (i.e. terminated by the OS scheduler). `raxtax` will create a binary database of the reference sequences in the output directory for faster loading on subsequent runs (disable this with `--skip-db`). Then, every time a query finishes, it will be written to the output files.
-To restart from the latest checkpoint, run `raxtax` with the same options for `--raw_confidence <bool> --skip_exact_matches <bool> --tsv <bool> --prefix <path>`.
+To restart from the latest checkpoint, run `raxtax` with the same options for `--raw-confidence <bool> --tsv <bool> --prefix <path>`.
 The database path will be recovered from the checkpoint file.
 The log file and result files will be appended to in subsequent runs.
 
@@ -209,10 +236,10 @@ The list of already processed queries is kept in `<prefix>/raxtax.ckp` and can b
 ## References
 
 <a id="1">[1]</a>
-Edgar, Robert C. "SINTAX: A Simple Non-Bayesian Taxonomy Classifier for 16S and ITS Sequences." bioRxiv, 2016, p. 074161. https://doi.org/10.1101/074161.
+Edgar, Robert C. "SINTAX: A Simple Non-Bayesian Taxonomy Classifier for 16S and ITS Sequences." bioRxiv, 2016, p. 074161. <https://doi.org/10.1101/074161>.
 
 <a id="2">[2]</a>
-Wittler, Roland. "General Encoding of Canonical k-mers." Peer Community Journal, vol. 3, 2023, p. e87. https://doi.org/10.24072/pcjournal.323.
+Wittler, Roland. "General Encoding of Canonical k-mers." Peer Community Journal, vol. 3, 2023, p. e87. <https://doi.org/10.24072/pcjournal.323>.
 
 ## Copyright
 

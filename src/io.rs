@@ -149,8 +149,8 @@ pub struct Args {
     #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
     pub threads: usize,
     /// Number of queries to read and process per batch.
-    /// Lower this to reduce peak memory usage for very large query files.
-    /// Passing 0 is equivalent to passing the number of all queries in the query file.
+    /// Lower values can reduce memory usage while processing queries.
+    /// Passing 0 is equivalent to passing the total number of queries in the query file.
     #[arg(long, default_value_t = 0, verbatim_doc_comment)]
     pub query_batch_size: usize,
     /// Output primary result file in tsv format
