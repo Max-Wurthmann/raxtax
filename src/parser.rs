@@ -273,7 +273,7 @@ impl SequenceReader {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
     /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
-    fn from_file(path: &Path) -> Result<Self> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         let (format, gzipped) = classify_file(path);
         let reader = get_reader(path, gzipped)?;
         Ok(match format {

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::{bail, Result};
 use itertools::Itertools;
 use log::{log_enabled, warn};
@@ -231,12 +229,13 @@ pub fn seq_to_unique_minenc_canon_kmers(
     sequence: &[u8],
     encoding_data: &KMerEncodingData,
 ) -> Vec<u32> {
-    // let mut bitvec = bitvec![0; encoding_data.n_unique_codes as usize];
-    let mut hash_set = HashSet::<u32>::new();
-    seq_to_minenc_canon_kmer_iter(sequence, encoding_data).for_each(|kmer_code| {
-        hash_set.insert(kmer_code);
-    });
-    hash_set.into_iter().sorted().collect_vec()
+    let mut kmers = seq_to_minenc_canon_kmer_iter(sequence, encoding_data).collect_vec();
+
+    kmers.sort_unstable();
+    kmers.dedup();
+    kmers.shrink_to_fit();
+
+    kmers
 }
 
 pub fn get_results(results: &[lineage::EvaluationResult<'_, '_>]) -> String {
