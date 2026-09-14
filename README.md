@@ -43,9 +43,28 @@ cargo build --profile=ultra
 
 ## Usage
 
-```sh
-Usage: raxtax [OPTIONS] --database-path <DATABASE_PATH> --kmer-size <KMER_SIZE>
+### Example
 
+See [`example/`](https://github.com/noahares/raxtax/tree/main/example) for example data to run `raxrax`.
+
+The files `example/diptera_references.fasta` and `example/diptera_queries.fasta` contain *Diptera* sequences for a quick example run of `raxtax`.
+If you did not clone this repository to acquire the `raxtax` executable, you may have to download these files from GitHub manually.
+
+From the project root (otherwise adjust the paths) run:
+
+```sh
+# with raxtax installed
+<path/to/raxtax> -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+
+# from source
+cargo run --profile=ultra -- -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
+```
+
+This creates a new folder `example/example_run` with the taxonomic assignments and confidence values for each query in `raxtax.out` and various log messages in `raxtax.log`.
+
+### Option Overview
+
+```text
 Options:
   -d, --database-path <DATABASE_PATH>
           Path to the database fasta or bin file
@@ -70,8 +89,6 @@ Options:
           Don't create the binary database for the reference sequences
   -c, --clean
           Remove binary database and checkpoint files after a successful run
-      --raw-confidence
-          Don't adjust confidence values for 1 exact match
   -o, --prefix <PREFIX>
           Output prefix [default: raxtax]
       --redo
@@ -87,25 +104,6 @@ Options:
   -V, --version
           Print version
 ```
-
-### Simple Example
-
-See [`example/`](https://github.com/noahares/raxtax/tree/main/example) for example data to run `raxrax`.
-
-The files `example/diptera_references.fasta` and `example/diptera_queries.fasta` contain *Diptera* sequences for a quick example run of `raxtax`.
-**If you did not clone this repository to acquire the `raxtax` executable, you may have to download these files from GitHub (via cloning the repository or manual download).**
-
-From the project root (otherwise adjust the paths) run:
-
-```sh
-# with raxtax installed
-<path/to/raxtax> -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
-
-# from source
-cargo run --profile=ultra -- -k 11 -d example/diptera_references.fasta -i example/diptera_queries.fasta -o example/example_run
-```
-
-This creates a new folder `example/example_run` with the taxonomic assignments and confidence values for each query in `raxtax.out` and various log messages (including exact sequence matches) in `raxtax.log`.
 
 ### Input Database (`-d`)
 
@@ -161,7 +159,6 @@ With the default command line parameters, only warnings and errors will be colle
 With `-v` additional information about runtime and the size of the database are printed.
 With `-vv` debug messages are also included.
 Generally, if a warning or error occurs, the program will inform you through `stderr` and refer you to the log file if needed.
-This file also contains information about exact matches and inconsistent lineages (possible mislabeling).
 
 2. (*optional* via `--tsv`) `<PREFIX>/raxtax.tsv` is pretty much the same as the first output file but slightly more convenient for viewing in your favorite spreadsheet editor.
 In this file, the taxonomic lineage and confidence values are interleaved, and the query sequence is also printed at the end:
@@ -170,7 +167,7 @@ In this file, the taxonomic lineage and confidence values are interleaved, and t
 query1  Arthropoda  1.0 Insecta 1.0 Diptera 0.8 Muscidae    0.68    Musca   0.52    Musca_domestica 0.31    0.67456 0.71234 ACTCGATAC
 ```
 
-## K-mer Size (-k)
+### K-mer Size (-k)
 
 `-k` is a required option. It determines the length of the k-mers that are used to compare the queries to the references.
 K must be between 1 and 16 (inclusive).
@@ -197,9 +194,6 @@ This is only recommended if you run with that database only once or it is very s
 
 `--clean` will remove the binary database and checkpoint files (`raxtax.json` and `raxtax.ckp`) after a successful run. This is mainly intended for long runs that might get interrupted, but the binary database is not needed afterwards.
 
-`--raw-confidence` will output the real confidence values if there is 1 exact match instead of setting the confidence to 1.0.
-This is mostly a debugging option, but might come in handy for specific usecases.
-
 `--threads` may be omitted most of the time and `raxtax` will use as many cores as your system has available. Because the analysis is *embarrassingly parallel*, this is a sensible default.
 However, if you experience problems due to hyper-threading, you might want to reduce the number of threads, to increase parallel efficiency.
 
@@ -224,7 +218,7 @@ An error message will be displayed if too many reference sequences are used with
 ## Checkpointing
 
 Since v.1.3.0 `raxtax` comes with default checkpointing to prevent data loss in case of unforeseen crashes (i.e. terminated by the OS scheduler). `raxtax` will create a binary database of the reference sequences in the output directory for faster loading on subsequent runs (disable this with `--skip-db`). Then, every time a query finishes, it will be written to the output files.
-To restart from the latest checkpoint, run `raxtax` with the same options for `--raw-confidence <bool> --tsv <bool> --prefix <path>`.
+To restart from the latest checkpoint, run `raxtax` with the same options for `--tsv <bool> --prefix <path>`.
 The database path will be recovered from the checkpoint file.
 The log file and result files will be appended to in subsequent runs.
 

@@ -221,12 +221,6 @@ impl Tree {
         Ok(decoded)
     }
 
-    pub fn get_shared_exact_match(&self, num_levels: usize, num_shared: usize) -> Vec<f64> {
-        let mut values = vec![1.0; num_levels];
-        values.push(1.0 / num_shared as f64);
-        values
-    }
-
     pub fn is_inner_taxon_node(&self, node: &Node) -> bool {
         node.node_type == NodeType::Inner
     }

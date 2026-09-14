@@ -74,7 +74,6 @@ pub struct Checkpoint {
     pub checkpoint_file: PathBuf,
     pub progress_file: PathBuf,
     pub db_fingerprint: FileFingerprint,
-    raw_confidence: bool,
     tsv: bool,
     #[serde(skip)]
     pub processed_queries: HashSet<String>,
@@ -86,7 +85,6 @@ impl Checkpoint {
             checkpoint_file: std::path::absolute(own_path)?,
             progress_file: std::path::absolute(own_path.with_extension("ckp"))?,
             db_fingerprint: FileFingerprint::new(&args.database_path)?,
-            raw_confidence: args.raw_confidence,
             tsv: args.tsv,
             processed_queries: HashSet::new(),
         })
@@ -168,9 +166,6 @@ pub struct Args {
     /// Remove binary database and checkpoint files after a successful run
     #[arg(short, long)]
     pub clean: bool,
-    /// Don't adjust confidence values for 1 exact match
-    #[arg(long)]
-    pub raw_confidence: bool,
     /// Output prefix
     #[arg(short = 'o', long, default_value = "raxtax")]
     pub prefix: PathBuf,
@@ -337,11 +332,7 @@ impl Args {
     fn checkpoint_valid(&self, checkpoint: &Checkpoint) -> bool {
         let reevaluated_fingerprint = FileFingerprint::new(&checkpoint.db_fingerprint.path);
         match reevaluated_fingerprint {
-            Ok(fp) => {
-                self.tsv == checkpoint.tsv
-                    && self.raw_confidence == checkpoint.raw_confidence
-                    && fp == checkpoint.db_fingerprint
-            }
+            Ok(fp) => self.tsv == checkpoint.tsv && fp == checkpoint.db_fingerprint,
             Err(e) => {
                 utils::report_error(e, "Could not verify checkpoint, starting from scratch!");
                 false
