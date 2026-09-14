@@ -277,13 +277,22 @@ impl SequenceReader {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
     /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
+    /// A `.bin` file (`raxtax`'s cached-database format) is rejected outright, since
+    /// it's never a sequence file.
     pub fn from_file(path: &Path) -> Result<Self> {
         let (format, gzipped) = classify_file(path);
-        let reader = get_reader(path, gzipped)?;
-        Ok(match format {
-            FileFormat::Fastq => SequenceReader::Fastq(FastqSequenceReader::new(reader)),
-            FileFormat::Fasta => SequenceReader::Fasta(FastaSequenceReader::new(reader)),
-        })
+        match format {
+            FileFormat::Fastq => Ok(SequenceReader::Fastq(FastqSequenceReader::new(get_reader(
+                path, gzipped,
+            )?))),
+            FileFormat::Fasta => Ok(SequenceReader::Fasta(FastaSequenceReader::new(get_reader(
+                path, gzipped,
+            )?))),
+            FileFormat::Bin => bail!(
+                "{} looks like a cached raxtax database (.bin), not a sequence file",
+                path.display()
+            ),
+        }
     }
 }
 
@@ -309,7 +318,8 @@ pub struct BatchedSequenceReader<'a> {
 impl<'a> BatchedSequenceReader<'a> {
     /// Opens `path` (transparently decompressing `.gz`/`.gzip` files) and
     /// picks a FASTA or FASTQ record reader based on the file extension
-    /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA).
+    /// (`.fastq`/`.fq` are identified as FASTQ, everything else defaults to FASTA;
+    /// a `.bin` file is rejected outright, see [`SequenceReader::from_file`]).
     /// Also batches the records into fixed sizes and ingores any sequences whose labels are in
     /// `seq_to_skip`.
     pub fn from_file(
@@ -360,6 +370,7 @@ impl<'a> Iterator for BatchedSequenceReader<'a> {
 enum FileFormat {
     Fasta,
     Fastq,
+    Bin,
 }
 
 fn extension_lowercase(path: &Path) -> String {
@@ -371,8 +382,8 @@ fn extension_lowercase(path: &Path) -> String {
 
 /// Classifies `path` by its extension, transparently looking through a
 /// trailing `.gz`/`.gzip` to the format extension underneath
-/// (`.fastq`/`.fq`, or anything else defaulting to FASTA). Returns the
-/// format plus whether the file is gzip-compressed.
+/// (`.fastq`/`.fq`, `.bin` for a cached database, or anything else defaulting to FASTA).
+/// Returns the format plus whether the file is gzip-compressed.
 fn classify_file(path: &Path) -> (FileFormat, bool) {
     let ext = extension_lowercase(path);
     let (ext, gzipped) = match ext.as_str() {
@@ -386,12 +397,13 @@ fn classify_file(path: &Path) -> (FileFormat, bool) {
         _ => (ext, false),
     };
     let format = match ext.as_str() {
-        "fastq" | "fq" => FileFormat::Fastq,
         "fasta" | "fa" | "fna" | "faa" => FileFormat::Fasta,
+        "fastq" | "fq" => FileFormat::Fastq,
+        "bin" => FileFormat::Bin,
         _ => {
             if log_enabled!(Level::Info) {
-                eprintln!("[INFO ] Unrecognized file extension {ext}, attempting to parse as FASTA file...");
-                info!("Unrecognized file extension {ext}, attempting to parse as FASTA file...");
+                eprintln!("[INFO ] Unrecognized file extension .{ext}, attempting to parse as FASTA file...");
+                info!("Unrecognized file extension .{ext}, attempting to parse as FASTA file...");
             }
             FileFormat::Fasta
         }
@@ -427,12 +439,17 @@ fn count_chars_in_file<R: BufRead>(mut reader: R, target: u8) -> Result<usize> {
 
 /// Quickly estimates the number of sequences (records) in a FASTA/FASTQ file.
 /// Transparently handles `.gz`/`.gzip` compression. Plain (uncompressed) files are scanned in
-/// parallel across the rayon thread pool while gzipped files are scanned sequentially
+/// parallel across the rayon thread pool while gzipped files are scanned sequentially.
+/// A `.bin` (cached-database) file is not scanned at all; this always returns `0` for one.
 pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
     let (format, gzipped) = classify_file(path);
-    let target = match format {
-        FileFormat::Fasta => b'>',
-        FileFormat::Fastq => b'\n',
+    let (target, divisor) = match format {
+        FileFormat::Fasta => (b'>', 1),
+        // FASTQ records span 4 lines each, so we count newlines and divide by 4.
+        FileFormat::Fastq => (b'\n', 4),
+        // The result is only used to size a progress bar:
+        // can be omitted for a reference binfile that is already parsed.
+        FileFormat::Bin => return Ok(0),
     };
 
     let count = if gzipped {
@@ -455,11 +472,7 @@ pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
             .try_reduce(|| 0, |a, b| Ok(a + b))?
     };
 
-    match format {
-        // if the file is FASTQ, we counted lines and need to divide by 4 to get the number of sequences
-        FileFormat::Fastq => Ok(count / 4),
-        FileFormat::Fasta => Ok(count),
-    }
+    Ok(count / divisor)
 }
 
 #[cfg(test)]

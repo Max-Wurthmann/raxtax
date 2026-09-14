@@ -109,6 +109,7 @@ Options:
 
 The database can be provided in FASTA or FASTQ format.
 It is possible to provide the file as a Gzip archive (`.gzip` or `.gz`).
+It is also possible to provide a binary database file created by `raxtax` (with the `.bin` extension).
 
 Sequence identifier should have the form `tax=<lineage>;`.
 Everything after `tax=` is parsed as a comma-separated list of lineage nodes and is terminated by a semicolon.
