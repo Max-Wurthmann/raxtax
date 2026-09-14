@@ -80,15 +80,19 @@ fn parse_reference_records(
     let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
     let (labels, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) = {
         let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
-        let pb = ProgressBar::new(n_references as u64)
-            .with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+        let pb = if cfg!(test) {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(n_references as u64)
+                .with_style(
+                    ProgressStyle::with_template(
+                        "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("##-"),
                 )
-                .unwrap()
-                .progress_chars("##-"),
-            )
-            .with_message("Parsing Reference...");
+                .with_message("Parsing Reference...")
+        };
         pb.enable_steady_tick(Duration::from_millis(100));
 
         let mut labels: Vec<LineageBinPair> = Vec::new();

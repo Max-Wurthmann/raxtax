@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use indicatif::{HumanBytes, ProgressIterator, ProgressStyle};
+use indicatif::{HumanBytes, ProgressBar, ProgressIterator, ProgressStyle};
 use itertools::Itertools;
 use log::{debug, log_enabled, Level};
 use logging_timer::time;
@@ -65,16 +65,21 @@ impl Tree {
 
         lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
         let mut confidence_idx = 0_usize;
-        let _ = lineage_sequence_pairs
-            .iter()
-            .enumerate()
-            .progress_with_style(
+        let pb = if cfg!(test) {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(lineage_sequence_pairs.len() as u64).with_style(
                 ProgressStyle::with_template(
                     "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
                 )
                 .unwrap()
                 .progress_chars("##-"),
             )
+        };
+        let _ = lineage_sequence_pairs
+            .iter()
+            .enumerate()
+            .progress_with(pb)
             .with_message("Creating lineage tree and k-mer map...")
             .map(|(idx, ((lineage, _), sequence))| -> Result<()> {
                 let levels = lineage.split(',').collect_vec();

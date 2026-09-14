@@ -40,15 +40,19 @@ pub fn raxtax<I>(
 where
     I: Iterator<Item = Result<Vec<(String, Vec<u8>)>>> + Send,
 {
-    let pb = ProgressBar::new(n_queries as u64)
-        .with_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+    let pb = if cfg!(test) {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(n_queries as u64)
+            .with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+                )
+                .unwrap()
+                .progress_chars("##-"),
             )
-            .unwrap()
-            .progress_chars("##-"),
-        )
-        .with_message("Running Queries...");
+            .with_message("Running Queries...")
+    };
     pb.enable_steady_tick(Duration::from_millis(100));
 
     // `par_bridge` is used to convert the iterator into a parallel iterator, uses a mutex guard.
