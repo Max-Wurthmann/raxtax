@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use anyhow::{bail, Result};
-use bitvec::prelude::*;
 use itertools::Itertools;
 use log::{log_enabled, warn};
 use serde::{Deserialize, Serialize};
@@ -240,71 +239,6 @@ pub fn seq_to_unique_minenc_canon_kmers(
     hash_set.into_iter().sorted().collect_vec()
 }
 
-/// Extracts canonical 8-mers from the given sequence.
-/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
-/// May yield duplicate k-mers, use `seq_to_unique_canon_kmers` to get unique sorted k-mers.
-pub fn seq_to_canon_8mer_iter(sequence: &[u8]) -> impl Iterator<Item = u16> + use<'_> {
-    let mut seq_iter = sequence.iter();
-    let mut kmer = 0_u16;
-    let mut rev_compl_kmer = 0_u16;
-    let mut filled_bases = 0_u32; // Tracks how many consecutive valid bases we have processed
-
-    std::iter::from_fn(move || {
-        for char in seq_iter.by_ref() {
-            if let Some(repr) = map_four_to_two_bit_repr(*char) {
-                // Add repr to the end of kmer
-                kmer = (kmer << 2) | repr as u16;
-
-                // A <-> T and C <-> G
-                let complement_repr = repr as u16 ^ 0b11;
-                // Add complement_repr to the start of rev_compl_kmer
-                rev_compl_kmer = (rev_compl_kmer >> 2) | (complement_repr << 14);
-
-                filled_bases += 1;
-                if filled_bases >= 8 {
-                    // Only yield a valid 8-mer once our sliding window has 8 consecutive valid bases
-                    return Some(std::cmp::min(kmer, rev_compl_kmer));
-                }
-            } else {
-                // Invalid/ambiguous char encountered
-                // We completely flush and reset our window state.
-                kmer = 0;
-                rev_compl_kmer = 0;
-                filled_bases = 0;
-            }
-        }
-        // No more characters left in the sequence
-        None
-    })
-}
-
-/// Extracts all canonical 8-mers from the given sequence.
-/// Invalid characters are ignored, any k-mer containing an invalid character is skipped.
-/// The resulting k-mers are sorted and unique.
-pub fn seq_to_unique_canon_8mers(sequence: &[u8]) -> Vec<u16> {
-    // u16::MAX as usize / 32 + 1 == 2048, which is the number of u32 needed to represent all possible u16 values as bits
-    let mut bitarr = BitArray::<[u32; u16::MAX as usize / 32 + 1], Msb0>::ZERO;
-    seq_to_canon_8mer_iter(sequence).for_each(|canonical_kmer| {
-        bitarr.set(canonical_kmer as usize, true);
-    });
-    bitarr.iter_ones().map(|idx| idx as u16).collect_vec()
-}
-
-pub fn seq_to_8mers(sequence: &[u8]) -> Vec<u16> {
-    let mut k_mers = HashSet::new();
-    sequence.windows(8).for_each(|vals| {
-        if let Some(k_mer) = vals
-            .iter()
-            .enumerate()
-            .map(|(j, v)| map_four_to_two_bit_repr(*v).map(|c| (c as u16) << (14 - j * 2)))
-            .fold_options(0_u16, |acc, c| acc | c)
-        {
-            k_mers.insert(k_mer);
-        }
-    });
-    k_mers.into_iter().sorted().collect_vec()
-}
-
 pub fn get_results(results: &[lineage::EvaluationResult<'_, '_>]) -> String {
     results
         .iter()
@@ -487,8 +421,8 @@ mod tests {
 
     use crate::utils::{
         cosine_similarity, decompress_sequence, encode, euclidean_distance_l1, euclidean_norm,
-        map_four_to_two_bit_repr, reverse_complement, seq_to_8mers, seq_to_unique_canon_8mers,
-        KMerEncodingData,
+        map_four_to_two_bit_repr, reverse_complement, seq_to_minenc_canon_kmer_iter,
+        seq_to_unique_minenc_canon_kmers, KMerEncodingData,
     };
 
     #[test]
@@ -530,8 +464,14 @@ mod tests {
 
     #[test]
     fn test_seq_to_unique_canon_kmers() {
-        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
-            let output = seq_to_unique_canon_8mers(input_seq);
+        let encoding_data = KMerEncodingData::new(8).unwrap();
+        // mirrors the `minenc_8mer` pattern used in parser.rs's tests: turns a raw,
+        // literal 2-bit-packed 8-mer into its minimal-encoded canonical code.
+        let minenc = |kmer: u32| encode(kmer, reverse_complement(kmer, 8), &encoding_data);
+
+        let check_output = |input_seq: &[u8], mut kmers_expected: Vec<u32>| {
+            kmers_expected.sort_unstable();
+            let output = seq_to_unique_minenc_canon_kmers(input_seq, &encoding_data);
             assert!(output.windows(2).all(|w| w[0] <= w[1]));
             assert_equal(output, kmers_expected);
         };
@@ -539,14 +479,14 @@ mod tests {
         // no invalid chars
         let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
         let expected1 = vec![
-            0b0001_0010_1101_1110,
-            0b0001_1101_0010_0001,
-            0b0010_0001_1101_0010,
-            0b0010_1101_1110_0010,
-            0b0100_1000_0111_0100,
-            0b0100_1011_0111_1000,
-            0b1000_0111_0100_1000,
-            0b1000_1011_0111_1000,
+            minenc(0b0001_0010_1101_1110),
+            minenc(0b0001_1101_0010_0001),
+            minenc(0b0010_0001_1101_0010),
+            minenc(0b0010_1101_1110_0010),
+            minenc(0b0100_1000_0111_0100),
+            minenc(0b0100_1011_0111_1000),
+            minenc(0b1000_0111_0100_1000),
+            minenc(0b1000_1011_0111_1000),
         ];
         let expected2 = expected1.clone();
         check_output(&seq1, expected1);
@@ -559,43 +499,37 @@ mod tests {
         check_output(&seq2, expected2);
 
         let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
-        let expected3 = vec![0b0000_0101_1010_1111];
+        let expected3 = vec![minenc(0b0000_0101_1010_1111)];
         check_output(&seq3, expected3);
     }
 
     #[test]
     fn test_seq_to_kmers() {
-        let check_output = |input_seq: &[u8], kmers_expected: Vec<u16>| {
-            let output = seq_to_8mers(input_seq);
-            assert!(output.windows(2).all(|w| w[0] <= w[1]));
-            assert_equal(output, kmers_expected);
-        };
+        let encoding_data = KMerEncodingData::new(8).unwrap();
+        let minenc = |kmer: u32| encode(kmer, reverse_complement(kmer, 8), &encoding_data);
 
-        // no invalid chars
-        let seq1 = vec![1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4];
-        let expected1: Vec<u16> = vec![
-            0b0001_0010_1101_1110,
-            0b0010_1101_1110_0010,
-            0b0100_1011_0111_1000,
-            0b0111_1000_1011_0111,
-            0b1000_1011_0111_1000,
-            0b1011_0111_1000_1011,
-            0b1101_1110_0010_1101,
-            0b1110_0010_1101_1110,
-        ];
-        let expected2 = expected1.clone();
-        check_output(&seq1, expected1);
+        // Two consecutive, distinct 8-mer windows must be yielded in encounter order,
+        // with duplicates preserved (unlike `seq_to_unique_minenc_canon_kmers`, which
+        // deduplicates and sorts).
+        let seq = vec![1, 1, 1, 1, 1, 1, 1, 1, 2]; // AAAAAAAA, then AAAAAAAC
+        let output: Vec<u32> = seq_to_minenc_canon_kmer_iter(&seq, &encoding_data).collect();
+        assert_eq!(output, vec![minenc(0), minenc(1)]);
 
-        // seq2 has invalid chars at front and end
-        let seq2 = vec![
-            12, 13, 1, 2, 1, 4, 8, 2, 8, 4, 1, 4, 8, 2, 8, 4, 1, 4, 17, 3,
-        ];
-        // expected2 is same as expected1
-        check_output(&seq2, expected2);
+        // An invalid/ambiguous character resets the sliding window: no k-mer is
+        // yielded until 8 consecutive valid bases have accumulated again.
+        let seq_with_gap = vec![1, 1, 1, 1, 1, 1, 1, 17, 1, 1, 1, 1, 1, 1, 1];
+        assert!(
+            seq_to_minenc_canon_kmer_iter(&seq_with_gap, &encoding_data)
+                .next()
+                .is_none(),
+            "only 7 consecutive valid bases follow the reset; no 8-mer should be produced"
+        );
 
-        let seq3 = vec![1, 1, 2, 2, 4, 4, 8, 8, 11, 17, 1, 1, 2, 2, 4, 4, 8, 8];
-        let expected3 = vec![0b0000_0101_1010_1111];
-        check_output(&seq3, expected3);
+        let mut seq_after_gap = seq_with_gap;
+        seq_after_gap.push(1); // 8 consecutive valid bases after the gap
+        let output_after_gap: Vec<u32> =
+            seq_to_minenc_canon_kmer_iter(&seq_after_gap, &encoding_data).collect();
+        assert_eq!(output_after_gap, vec![minenc(0)]);
     }
 
     #[test]
