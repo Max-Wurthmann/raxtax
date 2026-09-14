@@ -2,7 +2,7 @@ use ahash::HashSet;
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{info, log_enabled, warn, Level};
+use log::{info, log_enabled, Level};
 use logging_timer::{time, timer};
 use rayon::prelude::*;
 use regex::Regex;
@@ -44,7 +44,7 @@ fn map_dna_char(ch: char) -> u8 {
 }
 
 /// Parses a reference FASTA or FASTQ file into a [`Tree`],
-/// next to the generated tree, returns a boolean indicating whether the tree was parsed from the file or loaded from a cached tree file. If the cached tree file is present but has a different k-mer size than specified, it will be ignored and the reference file will be reparsed. The function also logs warnings if the k-mer sizes do not match, and returns an error if there are issues reading the file
+/// next to the generated tree, returns a boolean indicating whether the tree was parsed from the file or loaded from a cached tree file. If a cached tree file is present but was built with a different k-mer size than specified, that is an error, since we have no way of knowing where the original reference file it was built from lives. Returns an error if there are issues reading the file
 #[time("info", "Parsing References")]
 pub fn parse_reference_fasta_file(
     sequence_path: &PathBuf,
@@ -52,15 +52,15 @@ pub fn parse_reference_fasta_file(
     n_references: usize,
 ) -> Result<(bool, Tree)> {
     if let Ok(tree) = Tree::load_from_file(sequence_path) {
-        if tree.encoding_data != encoding_data {
-            let notification = format!("k-mer size of loaded tree (k={}) does not match specified k-mer size (k={}). Attempting to reparse reference file using k={} ...", tree.encoding_data.k, encoding_data.k, encoding_data.k);
-            warn!("{}", notification);
-            if log_enabled!(log::Level::Warn) {
-                eprintln!("\x1b[33m[WARN ]\x1b[0m {}", notification);
-            }
-        } else {
-            return Ok((false, tree));
+        if tree.encoding_data.k != encoding_data.k {
+            bail!(
+                "Cached database at {} was built with k={} but k={} was requested. Change requested k or point -d to the original reference file to rebuild the database.",
+                sequence_path.display(),
+                tree.encoding_data.k,
+                encoding_data.k
+            );
         }
+        return Ok((false, tree));
     }
     let records = SequenceReader::from_file(sequence_path)?;
     Ok((

@@ -74,6 +74,7 @@ pub struct Checkpoint {
     pub checkpoint_file: PathBuf,
     pub progress_file: PathBuf,
     pub db_fingerprint: FileFingerprint,
+    kmer_size: u32,
     tsv: bool,
     #[serde(skip)]
     pub processed_queries: HashSet<String>,
@@ -85,6 +86,7 @@ impl Checkpoint {
             checkpoint_file: std::path::absolute(own_path)?,
             progress_file: std::path::absolute(own_path.with_extension("ckp"))?,
             db_fingerprint: FileFingerprint::new(&args.database_path)?,
+            kmer_size: args.kmer_size,
             tsv: args.tsv,
             processed_queries: HashSet::new(),
         })
@@ -332,7 +334,11 @@ impl Args {
     fn checkpoint_valid(&self, checkpoint: &Checkpoint) -> bool {
         let reevaluated_fingerprint = FileFingerprint::new(&checkpoint.db_fingerprint.path);
         match reevaluated_fingerprint {
-            Ok(fp) => self.tsv == checkpoint.tsv && fp == checkpoint.db_fingerprint,
+            Ok(fp) => {
+                self.tsv == checkpoint.tsv
+                    && self.kmer_size == checkpoint.kmer_size
+                    && fp == checkpoint.db_fingerprint
+            }
             Err(e) => {
                 utils::report_error(e, "Could not verify checkpoint, starting from scratch!");
                 false

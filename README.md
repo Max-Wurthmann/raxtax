@@ -218,7 +218,7 @@ An error message will be displayed if too many reference sequences are used with
 ## Checkpointing
 
 Since v.1.3.0 `raxtax` comes with default checkpointing to prevent data loss in case of unforeseen crashes (i.e. terminated by the OS scheduler). `raxtax` will create a binary database of the reference sequences in the output directory for faster loading on subsequent runs (disable this with `--skip-db`). Then, every time a query finishes, it will be written to the output files.
-To restart from the latest checkpoint, run `raxtax` with the same options for `--tsv <bool> --prefix <path>`.
+To restart from the latest checkpoint, run `raxtax` with the same options for `-k <value> --tsv <bool> --prefix <path>`.
 The database path will be recovered from the checkpoint file.
 The log file and result files will be appended to in subsequent runs.
 
