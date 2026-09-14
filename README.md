@@ -126,7 +126,8 @@ ACTCGATAC
 
 ### Input Query (`-i`)
 
-The Queries can also be provided in FASTA or FASTQ format (optionally gzipped), but more relaxed than the database format:
+The queries can also be provided in FASTA or FASTQ format (optionally gzipped).
+For FASTA files, the sequence label should not contain the `>` character, as this will throw off the counter for the number of queries, which can affect not only the progress bar, but also the query batch size if left as default.
 
 ```sh
 # example FASTA
