@@ -42,7 +42,7 @@ pub struct Tree {
     pub bins: Vec<String>,
 
     // for each k-mer (outer idx), the vector of seqneces (sequenceIDs) containing it
-    pub k_mer_map: Vec<Vec<IndexType>>,
+    pub k_mer_map: Vec<Box<[IndexType]>>,
     pub encoding_data: KMerEncodingData,
 
     pub bin_idx_to_lineage_idxs: Vec<Vec<usize>>,
@@ -167,23 +167,22 @@ impl Tree {
             seqs.dedup();
         });
 
-        // High memory usage observed when parallelizing this step, possibly due to fragmentation of the heap.
-        // can possibly also be parallelized but not sure if it would be worth it.
-        // doing this shrink to fit can save significant memory, especially as this lives in memory
-        // for the entire lifetime of the program.
-        k_mer_map.iter_mut().for_each(|seqs| seqs.shrink_to_fit());
+        let k_mer_map_boxed = k_mer_map
+            .into_iter()
+            .map(|seqs| seqs.into_boxed_slice())
+            .collect_vec();
 
         if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
             let stack_size = size_of::<Vec<Vec<IndexType>>>();
-            let outer_heap = k_mer_map.capacity() * size_of::<Vec<IndexType>>();
-            let inner_heap: usize = k_mer_map
+            let outer_heap = k_mer_map_boxed.capacity() * size_of::<Box<[IndexType]>>();
+            let inner_heap: usize = k_mer_map_boxed
                 .iter()
-                .map(|inner| inner.capacity() * size_of::<IndexType>())
+                .map(|inner| inner.len() * size_of::<IndexType>())
                 .sum();
 
             debug!(
-                "size of k_mer_map: {} of vec smart pointers, {} of data, {} total",
+                "size of k_mer_map: {} of box & vec smart pointers, {} of data, {} total",
                 HumanBytes((stack_size + outer_heap) as u64),
                 HumanBytes((inner_heap) as u64),
                 HumanBytes((stack_size + outer_heap + inner_heap) as u64)
@@ -194,7 +193,7 @@ impl Tree {
             root,
             lineages,
             bins: bins.into_iter().unique().collect_vec(),
-            k_mer_map,
+            k_mer_map: k_mer_map_boxed,
             encoding_data,
             bin_idx_to_lineage_idxs,
             lineage_idx_to_bin_idx,
