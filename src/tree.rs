@@ -167,14 +167,16 @@ impl Tree {
             seqs.dedup();
         });
 
-        let k_mer_map_boxed = k_mer_map
+        let mut k_mer_map_boxed = k_mer_map
             .into_iter()
             .map(|seqs| seqs.into_boxed_slice())
             .collect_vec();
 
+        k_mer_map_boxed.shrink_to_fit();
+
         if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
-            let stack_size = size_of::<Vec<Vec<IndexType>>>();
+            let stack_size = size_of::<Vec<Box<[IndexType]>>>();
             let outer_heap = k_mer_map_boxed.capacity() * size_of::<Box<[IndexType]>>();
             let inner_heap: usize = k_mer_map_boxed
                 .iter()
