@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     parser::LineageBinPair,
-    utils::{seq_to_minenc_canon_kmer_iter, KMerEncodingData},
+    utils::{seq_to_unique_minenc_canon_kmers, KMerEncodingData},
 };
 
 #[cfg(feature = "huge_db")]
@@ -59,8 +59,6 @@ impl Tree {
     ) -> Result<Self> {
         check_lineage_size(labels.len());
         let mut root = Node::new(String::from("root"), 0, NodeType::Inner);
-        let mut k_mer_map: Vec<Vec<IndexType>> =
-            vec![Vec::new(); encoding_data.n_unique_codes as usize];
         let mut lineage_sequence_pairs = labels.into_iter().zip_eq(sequences).collect_vec();
 
         lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
@@ -76,12 +74,11 @@ impl Tree {
                 .progress_chars("##-"),
             )
         };
-        let _ = lineage_sequence_pairs
+        let per_seq_kmers = lineage_sequence_pairs
             .iter()
-            .enumerate()
             .progress_with(pb)
             .with_message("Creating lineage tree and k-mer map...")
-            .map(|(idx, ((lineage, _), sequence))| -> Result<()> {
+            .map(|((lineage, _), sequence)| -> Vec<u32> {
                 let levels = lineage.split(',').collect_vec();
                 let last_level_idx = levels.len() - 1;
                 let mut current_node = &mut root;
@@ -123,12 +120,9 @@ impl Tree {
                 ));
                 current_node.confidence_range.1 = confidence_idx;
 
-                for k_mer in seq_to_minenc_canon_kmer_iter(sequence, &encoding_data) {
-                    k_mer_map[k_mer as usize].push(idx as IndexType);
-                }
-                Ok(())
+                seq_to_unique_minenc_canon_kmers(sequence, &encoding_data)
             })
-            .collect::<Result<Vec<()>>>()?;
+            .collect::<Vec<Vec<u32>>>();
         root.confidence_range.1 = confidence_idx;
         let (sorted_lineages, _): (Vec<LineageBinPair>, Vec<Vec<u8>>) =
             lineage_sequence_pairs.into_iter().unzip();
@@ -160,25 +154,41 @@ impl Tree {
         let (bins, _): (Vec<String>, Vec<usize>) = bin_id_idx_pairs.into_iter().unzip();
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
 
-        // per k-mer: sort for locality, dedup and shrik to save memory
-        // important to do this inplace for memory efficiency
-        k_mer_map.par_iter_mut().for_each(|seqs| {
-            seqs.sort_unstable();
-            seqs.dedup();
-        });
+        let n = encoding_data.n_unique_codes as usize;
+        let mut counts: Vec<usize> = vec![0_usize; n];
 
-        let mut k_mer_map_boxed = k_mer_map
-            .into_iter()
-            .map(|seqs| seqs.into_boxed_slice())
-            .collect_vec();
+        // pass 1: count unique (k-mer, sequence) occurrences per k-mer
+        for k_mers in &per_seq_kmers {
+            for &k_mer in k_mers {
+                counts[k_mer as usize] += 1;
+            }
+        }
 
-        k_mer_map_boxed.shrink_to_fit();
+        // allocate each bucket at its exact final size, zero-filled
+        // independent per-bucket work, so done in parallel
+        let mut k_mer_map: Vec<Box<[IndexType]>> = counts
+            .par_iter()
+            .map(|&count| vec![IndexType::default(); count].into_boxed_slice())
+            .collect();
+
+        // reset to serve as curser during fill of each bucket in pass 2
+        counts.fill(0_usize);
+
+        // pass 2: fill each bucket
+        for (idx, k_mers) in per_seq_kmers.iter().enumerate() {
+            for &k_mer in k_mers {
+                let bucket = k_mer as usize;
+                let pos = counts[bucket];
+                k_mer_map[bucket][pos] = idx as IndexType;
+                counts[bucket] += 1;
+            }
+        }
 
         if log_enabled!(Level::Debug) {
             // log the size of the k_mer_map
             let stack_size = size_of::<Vec<Box<[IndexType]>>>();
-            let outer_heap = k_mer_map_boxed.capacity() * size_of::<Box<[IndexType]>>();
-            let inner_heap: usize = k_mer_map_boxed
+            let outer_heap = k_mer_map.capacity() * size_of::<Box<[IndexType]>>();
+            let inner_heap: usize = k_mer_map
                 .iter()
                 .map(|inner| inner.len() * size_of::<IndexType>())
                 .sum();
@@ -195,7 +205,7 @@ impl Tree {
             root,
             lineages,
             bins: bins.into_iter().unique().collect_vec(),
-            k_mer_map: k_mer_map_boxed,
+            k_mer_map,
             encoding_data,
             bin_idx_to_lineage_idxs,
             lineage_idx_to_bin_idx,
