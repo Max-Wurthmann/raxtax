@@ -46,7 +46,7 @@ fn map_dna_char(ch: char) -> u8 {
 /// Parses a reference FASTA or FASTQ file into a [`Tree`],
 /// next to the generated tree, returns a boolean indicating whether the tree was parsed from the file or loaded from a cached tree file. If a cached tree file is present but was built with a different k-mer size than specified, that is an error, since we have no way of knowing where the original reference file it was built from lives. Returns an error if there are issues reading the file
 #[time("info", "Parsing References")]
-pub fn parse_reference_fasta_file(
+pub fn parse_reference_file(
     sequence_path: &PathBuf,
     encoding_data: KMerEncodingData,
     n_references: usize,
@@ -489,7 +489,7 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::{
-        count_chars_in_file, count_sequences_in_file, parse_reference_fasta_file,
+        count_chars_in_file, count_sequences_in_file, parse_reference_file,
         parse_reference_records, BatchedSequenceReader, FastaSequenceReader, FastqSequenceReader,
         SequenceReader,
     };
@@ -789,7 +789,7 @@ AAACCCCGG";
         )
         .unwrap();
         let (parsed, tree) =
-            parse_reference_fasta_file(&fastq_path, KMerEncodingData::new(8).unwrap(), 1).unwrap();
+            parse_reference_file(&fastq_path, KMerEncodingData::new(8).unwrap(), 1).unwrap();
         assert!(parsed);
         assert_eq!(tree.lineages, vec!["p:Phylum1,c:Class1".to_string()]);
         assert_eq!(tree.num_tips, 1);

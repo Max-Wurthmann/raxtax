@@ -6,7 +6,7 @@ use log::Level;
 use logging_timer::timer;
 use raxtax::io::FileFingerprint;
 use raxtax::io::{self, ResultsToPrint};
-use raxtax::parser::{count_sequences_in_file, parse_reference_fasta_file, BatchedSequenceReader};
+use raxtax::parser::{count_sequences_in_file, parse_reference_file, BatchedSequenceReader};
 use raxtax::raxtax::{raxtax, RaxtaxSettings};
 use raxtax::utils::{self, KMerEncodingData};
 use std::io::Write;
@@ -75,7 +75,7 @@ fn main() {
         exit(exitcode::NOINPUT);
     });
     let (store_db, tree) =
-        parse_reference_fasta_file(&checkpoint.db_fingerprint.path, encoding_data, n_references)
+        parse_reference_file(&checkpoint.db_fingerprint.path, encoding_data, n_references)
             .unwrap_or_else(|e| {
                 utils::report_error(
                     e,
