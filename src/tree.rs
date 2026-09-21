@@ -63,68 +63,50 @@ impl Tree {
 
         lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
         let mut confidence_idx = 0_usize;
-        let pb = if cfg!(test) {
-            ProgressBar::hidden()
-        } else {
-            ProgressBar::new(lineage_sequence_pairs.len() as u64).with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
-                )
-                .unwrap()
-                .progress_chars("##-"),
-            )
-        };
-        let per_seq_kmers = lineage_sequence_pairs
-            .iter()
-            .progress_with(pb)
-            .with_message("Creating lineage tree and k-mer map...")
-            .map(|((lineage, _), sequence)| -> Vec<u32> {
-                let levels = lineage.split(',').collect_vec();
-                let last_level_idx = levels.len() - 1;
-                let mut current_node = &mut root;
-                for (level, label) in levels.into_iter().enumerate() {
-                    let node_type = if level == last_level_idx {
-                        NodeType::Taxon
-                    } else {
-                        NodeType::Inner
-                    };
-                    match &current_node.get_last_child_label() {
-                        Some(name) => {
-                            if name.as_str() != label {
-                                current_node.add_child(Node::new(
-                                    label.to_string(),
-                                    confidence_idx,
-                                    node_type,
-                                ));
-                            }
-                            current_node.confidence_range.1 = confidence_idx + 1;
-                        }
-                        None => {
+        for ((lineage, _), _) in &lineage_sequence_pairs {
+            let levels = lineage.split(',').collect_vec();
+            let last_level_idx = levels.len() - 1;
+            let mut current_node = &mut root;
+            for (level, label) in levels.into_iter().enumerate() {
+                let node_type = if level == last_level_idx {
+                    NodeType::Taxon
+                } else {
+                    NodeType::Inner
+                };
+                match &current_node.get_last_child_label() {
+                    Some(name) => {
+                        if name.as_str() != label {
                             current_node.add_child(Node::new(
                                 label.to_string(),
                                 confidence_idx,
                                 node_type,
                             ));
-                            current_node.confidence_range.1 = confidence_idx + 1;
                         }
-                    };
-                    if level == last_level_idx {
-                        confidence_idx += 1;
+                        current_node.confidence_range.1 = confidence_idx + 1;
                     }
-                    current_node = current_node.children.last_mut().unwrap();
+                    None => {
+                        current_node.add_child(Node::new(
+                            label.to_string(),
+                            confidence_idx,
+                            node_type,
+                        ));
+                        current_node.confidence_range.1 = confidence_idx + 1;
+                    }
+                };
+                if level == last_level_idx {
+                    confidence_idx += 1;
                 }
-                current_node.add_child(Node::new(
-                    current_node.label.clone(),
-                    confidence_idx - 1,
-                    NodeType::Sequence,
-                ));
-                current_node.confidence_range.1 = confidence_idx;
-
-                seq_to_unique_minenc_canon_kmers(sequence, &encoding_data)
-            })
-            .collect::<Vec<Vec<u32>>>();
+                current_node = current_node.children.last_mut().unwrap();
+            }
+            current_node.add_child(Node::new(
+                current_node.label.clone(),
+                confidence_idx - 1,
+                NodeType::Sequence,
+            ));
+            current_node.confidence_range.1 = confidence_idx;
+        }
         root.confidence_range.1 = confidence_idx;
-        let (sorted_lineages, _): (Vec<LineageBinPair>, Vec<Vec<u8>>) =
+        let (sorted_lineages, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) =
             lineage_sequence_pairs.into_iter().unzip();
 
         let mut bin_idx_to_lineage_idxs: Vec<Vec<usize>> = Vec::new();
@@ -158,8 +140,10 @@ impl Tree {
         let mut counts: Vec<usize> = vec![0_usize; n];
 
         // pass 1: count unique (k-mer, sequence) occurrences per k-mer
-        for k_mers in &per_seq_kmers {
-            for &k_mer in k_mers {
+        // the unique k-mers are recomputed per sequence instead of being kept for all
+        // sequences at once, as that would need to coexist in memory with the k_mer_map
+        for sequence in &sequences {
+            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, &encoding_data) {
                 counts[k_mer as usize] += 1;
             }
         }
@@ -174,9 +158,26 @@ impl Tree {
         // reset to serve as curser during fill of each bucket in pass 2
         counts.fill(0_usize);
 
-        // pass 2: fill each bucket
-        for (idx, k_mers) in per_seq_kmers.iter().enumerate() {
-            for &k_mer in k_mers {
+        let pb = if cfg!(test) {
+            ProgressBar::hidden()
+        } else {
+            ProgressBar::new(sequences.len() as u64).with_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+                )
+                .unwrap()
+                .progress_chars("##-"),
+            )
+        };
+
+        // pass 2: fill each bucket, recomputing the unique k-mers of each sequence to save memory
+        for (idx, sequence) in sequences
+            .iter()
+            .enumerate()
+            .progress_with(pb)
+            .with_message("Creating k-mer map...")
+        {
+            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, &encoding_data) {
                 let bucket = k_mer as usize;
                 let pos = counts[bucket];
                 k_mer_map[bucket][pos] = idx as IndexType;
