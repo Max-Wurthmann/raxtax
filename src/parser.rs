@@ -481,10 +481,7 @@ mod tests {
 
     use itertools::Itertools;
 
-    use crate::{
-        tree::Tree,
-        utils::{encode, reverse_complement, KMerEncodingData},
-    };
+    use crate::utils::{encode, reverse_complement, KMerEncodingData};
 
     use std::io::{Cursor, Write};
 
@@ -522,26 +519,27 @@ ATACGCTTTGCGT";
             6,
         )
         .unwrap();
-        for (k, v) in tree.k_mer_map.iter().enumerate() {
+        for k in 0..tree.k_mer_map_offsets.len() - 1 {
+            let v = tree.kmer_row(k);
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
             }
         }
         assert_eq!(
-            tree.k_mer_map[minenc_8mer(0b0001_0101_1111_1110)]
+            tree.kmer_row(minenc_8mer(0b0001_0101_1111_1110))
                 .iter()
                 .collect_vec(),
             &[&0]
         );
         assert_eq!(
-            tree.k_mer_map[minenc_8mer(0b0000_1001_1011_0011)]
+            tree.kmer_row(minenc_8mer(0b0000_1001_1011_0011))
                 .iter()
                 .sorted()
                 .collect_vec(),
             &[&1, &4, &5]
         );
         assert_eq!(
-            tree.k_mer_map[minenc_8mer(0b0101_0011_0010_0110)]
+            tree.kmer_row(minenc_8mer(0b0101_0011_0010_0110))
                 .iter()
                 .collect_vec(),
             &[&3]
@@ -686,13 +684,14 @@ AAACCCCGG";
          * 4: AAACCCCGG -> CCGGGGTTT
          */
 
-        let Tree { k_mer_map, .. } = parse_reference_records(
+        let tree = parse_reference_records(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
             KMerEncodingData::new(8).unwrap(),
             5,
         )
         .unwrap();
-        for (k, v) in k_mer_map.iter().enumerate() {
+        for k in 0..tree.k_mer_map_offsets.len() - 1 {
+            let v = tree.kmer_row(k);
             if !v.is_empty() {
                 println!("{k:b}:\n {v:?}");
             }
@@ -700,7 +699,7 @@ AAACCCCGG";
 
         assert_eq!(
             // AAACCCCG
-            k_mer_map[minenc_8mer(0b01_0101_0110)]
+            tree.kmer_row(minenc_8mer(0b01_0101_0110))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -708,7 +707,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // AACCCCGG
-            k_mer_map[minenc_8mer(0b0101_0101_1010)]
+            tree.kmer_row(minenc_8mer(0b0101_0101_1010))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -716,7 +715,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // AACCCCGT
-            k_mer_map[minenc_8mer(0b101_0101_1011)]
+            tree.kmer_row(minenc_8mer(0b101_0101_1011))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -724,7 +723,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // CGGGGTTA
-            k_mer_map[minenc_8mer(0b0110_1010_1011_1100)]
+            tree.kmer_row(minenc_8mer(0b0110_1010_1011_1100))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -732,7 +731,7 @@ AAACCCCGG";
         );
         assert_eq!(
             // GGTTTTAA
-            k_mer_map[minenc_8mer(0b1010_1111_1111_0000)]
+            tree.kmer_row(minenc_8mer(0b1010_1111_1111_0000))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -740,7 +739,7 @@ AAACCCCGG";
         );
         // GGTTTTAA
         assert_eq!(
-            k_mer_map[minenc_8mer(0b1010_1111_1111_0000)]
+            tree.kmer_row(minenc_8mer(0b1010_1111_1111_0000))
                 .iter()
                 .sorted()
                 .collect_vec(),
@@ -748,7 +747,7 @@ AAACCCCGG";
         );
         // GTTTTAAA
         assert_eq!(
-            k_mer_map[minenc_8mer(0b1011_1111_1100_0000)]
+            tree.kmer_row(minenc_8mer(0b1011_1111_1100_0000))
                 .iter()
                 .sorted()
                 .collect_vec(),

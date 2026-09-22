@@ -69,7 +69,7 @@ where
                 debug_assert!(u16::try_from(k_mers.len()).is_ok());
                 let num_trials = k_mers.len() / 2;
                 for query_kmer in &k_mers {
-                    tree.k_mer_map[*query_kmer as usize].iter().for_each(
+                    tree.kmer_row(*query_kmer as usize).iter().for_each(
                         |sequence_id: &IndexType| {
                             // cast is necessary, because sequence_id is u32 if not cfg(huge_db)
                             #[allow(clippy::unnecessary_cast)]
