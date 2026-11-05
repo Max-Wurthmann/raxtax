@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// Benchmarks `parse_reference_file` against a file named by the
 /// `PARSE_REF_BENCH_FILE` env var (falling back to the bundled example
 /// reference database), at a k-mer size named by `PARSE_REF_BENCH_K`
-/// (falling back to 11), and prints the number of references parsed.
+/// (falling back to 11), and prints the number of references in the file.
 fn bench_parse_reference_file(c: &mut Criterion) {
     let path = std::env::var("PARSE_REF_BENCH_FILE")
         .map(PathBuf::from)
@@ -31,14 +31,13 @@ fn bench_parse_reference_file(c: &mut Criterion) {
             parse_reference_file(
                 std::hint::black_box(&path),
                 std::hint::black_box(KMerEncodingData::new(k).unwrap()),
-                std::hint::black_box(n_references),
             )
             .unwrap()
         });
     });
 
     let (parsed_from_file, _tree) =
-        parse_reference_file(&path, KMerEncodingData::new(k).unwrap(), n_references).unwrap();
+        parse_reference_file(&path, KMerEncodingData::new(k).unwrap()).unwrap();
     println!(
         "Parsed {n_references} references from {} at k={k} (freshly parsed: {parsed_from_file})",
         path.display()

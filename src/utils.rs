@@ -229,13 +229,27 @@ pub fn seq_to_unique_minenc_canon_kmers(
     sequence: &[u8],
     encoding_data: &KMerEncodingData,
 ) -> Vec<u32> {
-    let mut kmers = seq_to_minenc_canon_kmer_iter(sequence, encoding_data).collect_vec();
-
-    kmers.sort_unstable();
-    kmers.dedup();
+    let mut kmers = Vec::new();
+    seq_to_unique_minenc_canon_kmers_into(sequence, encoding_data, &mut kmers);
     kmers.shrink_to_fit();
 
     kmers
+}
+
+/// Like [`seq_to_unique_minenc_canon_kmers`], but writes into `kmers` instead of
+/// allocating. Collecting every k-mer window costs 4 bytes per base, so for
+/// multi-megabase reference sequences reusing one buffer across sequences avoids
+/// re-allocating (and re-growing) tens of megabytes per sequence.
+pub fn seq_to_unique_minenc_canon_kmers_into(
+    sequence: &[u8],
+    encoding_data: &KMerEncodingData,
+    kmers: &mut Vec<u32>,
+) {
+    kmers.clear();
+    kmers.extend(seq_to_minenc_canon_kmer_iter(sequence, encoding_data));
+
+    kmers.sort_unstable();
+    kmers.dedup();
 }
 
 pub fn get_results(results: &[lineage::EvaluationResult<'_, '_>]) -> String {

@@ -218,33 +218,43 @@ mod tests {
 
     use crate::{
         lineage::{EvaluationResult, Lineage},
+        parser::{FastaSequenceReader, SequenceReader},
         tree::Tree,
         utils::KMerEncodingData,
     };
+    use std::io::Cursor;
+
+    /// Builds a [`Tree`] from reference labels alone. The sequences are all `N`s, which yield no
+    /// k-mers, so the k-mer map stays empty and out of these tests, exactly as the all-zero
+    /// sequences these tests used before did.
+    fn build_tree(labels: &[(&str, Option<&str>)]) -> Tree {
+        let fasta = labels
+            .iter()
+            .enumerate()
+            .map(|(idx, (lineage, bin))| {
+                format!(">r{idx};tax={lineage};{}\nNNNNNNNNN", bin.unwrap_or(""))
+            })
+            .join("\n");
+        Tree::build(
+            || {
+                Ok(SequenceReader::Fasta(FastaSequenceReader::new(Box::new(
+                    Cursor::new(fasta.clone().into_bytes()),
+                ))))
+            },
+            KMerEncodingData::new(8).unwrap(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn test_tree_construction() {
-        let lineages = vec![
-            String::from("Animalia,Chordata,Mammalia,Primates,Hominidae,Homo"),
-            "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-        ];
-        let bins = vec![None; 5];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
-        let tree = Tree::new(
-            lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
-            KMerEncodingData::new(8).unwrap(),
-        )
-        .unwrap();
+        let tree = build_tree(&[
+            ("Animalia,Chordata,Mammalia,Primates,Hominidae,Homo", None),
+            ("Animalia,Chordata,Mammalia,Primates,Hominidae,Pan", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+        ]);
         let confidence_values = vec![0.1, 0.3, 0.4, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -281,31 +291,18 @@ mod tests {
 
     #[test]
     fn test_variable_lineage_length() {
-        let lineages = vec![
-            String::from("Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens"),
-            "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Doggo".into(),
-            "Animalia,Chordata,Mammalia,Mouse".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-        ];
-        let bins = vec![None; 7];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
-        let tree = Tree::new(
-            lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
-            KMerEncodingData::new(8).unwrap(),
-        )
-        .unwrap();
+        let tree = build_tree(&[
+            (
+                "Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens",
+                None,
+            ),
+            ("Animalia,Chordata,Mammalia,Primates,Hominidae,Pan", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Doggo", None),
+            ("Animalia,Chordata,Mammalia,Mouse", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+        ]);
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -351,22 +348,14 @@ mod tests {
 
     #[test]
     fn test_likelihood_edge_case() {
-        let lineages = vec![
+        let tree = build_tree(&[
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
             (
-                "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
+                "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis_ferrocius",
                 None,
             ),
-            (
-                "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis_ferrocius".into(),
-                None,
-            ),
-            (
-                "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis".into(),
-                None,
-            ),
-        ];
-        let sequences = vec![[0b00].repeat(9), [0b00].repeat(9), [0b00].repeat(9)];
-        let tree = Tree::new(lineages, sequences, KMerEncodingData::new(8).unwrap()).unwrap();
+            ("Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis", None),
+        ]);
         let confidence_values = vec![0.004, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -393,39 +382,24 @@ mod tests {
 
     #[test]
     fn test_taxonomic_binning() {
-        let lineages = vec![
-            String::from("Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens"),
-            "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Doggo".into(),
-            "Animalia,Chordata,Mammalia,Mouse".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-        ];
-        let bins = vec![
-            Some(String::from("BIN1")),
-            Some("BIN1".into()),
-            Some("BIN2".into()),
-            Some("BIN2".into()),
-            Some("BIN3".into()),
-            None,
-            None,
-        ];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
-        let tree = Tree::new(
-            lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
-            KMerEncodingData::new(8).unwrap(),
-        )
-        .unwrap();
+        let tree = build_tree(&[
+            (
+                "Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens",
+                Some("BIN1"),
+            ),
+            (
+                "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan",
+                Some("BIN1"),
+            ),
+            (
+                "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis",
+                Some("BIN2"),
+            ),
+            ("Animalia,Chordata,Mammalia,Carnivora,Doggo", Some("BIN2")),
+            ("Animalia,Chordata,Mammalia,Mouse", Some("BIN3")),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis", None),
+        ]);
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -437,39 +411,27 @@ mod tests {
 
     #[test]
     fn test_taxonomic_binning_weird_bins() {
-        let lineages = vec![
-            String::from("Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens"),
-            "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Doggo".into(),
-            "Animalia,Chordata,Mammalia,Mouse".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-            "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
-        ];
-        let bins = vec![
-            Some(String::from("BIN1")),
-            Some("BIN2".into()),
-            None,
-            Some("BIN3".into()),
-            Some("BIN3".into()),
-            Some("BIN4".into()),
-            Some("BIN3".into()),
-        ];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
-        let tree = Tree::new(
-            lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
-            KMerEncodingData::new(8).unwrap(),
-        )
-        .unwrap();
+        let tree = build_tree(&[
+            (
+                "Animalia,Chordata,Mammalia,Primates,Hominidae,Homo,Homo_sapiens",
+                Some("BIN1"),
+            ),
+            (
+                "Animalia,Chordata,Mammalia,Primates,Hominidae,Pan",
+                Some("BIN2"),
+            ),
+            ("Animalia,Chordata,Mammalia,Carnivora,Canidae,Canis", None),
+            ("Animalia,Chordata,Mammalia,Carnivora,Doggo", Some("BIN3")),
+            ("Animalia,Chordata,Mammalia,Mouse", Some("BIN3")),
+            (
+                "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis",
+                Some("BIN4"),
+            ),
+            (
+                "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis",
+                Some("BIN3"),
+            ),
+        ]);
         let confidence_values = vec![0.05, 0.1, 0.3, 0.4, 0.1, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");

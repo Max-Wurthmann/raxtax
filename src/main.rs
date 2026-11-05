@@ -63,29 +63,17 @@ fn main() {
         exit(exitcode::USAGE);
     });
 
-    // Count number of reference sequences
-    let n_references = count_sequences_in_file(&args.database_path).unwrap_or_else(|e| {
-        utils::report_error(
-            e,
-            format!(
-                "Failed to count sequences in {}",
-                args.database_path.display()
-            ),
-        );
-        exit(exitcode::NOINPUT);
-    });
-    let (store_db, tree) =
-        parse_reference_file(&checkpoint.db_fingerprint.path, encoding_data, n_references)
-            .unwrap_or_else(|e| {
-                utils::report_error(
-                    e,
-                    format!(
-                        "Failed to parse {}",
-                        checkpoint.db_fingerprint.path.display()
-                    ),
-                );
-                exit(exitcode::NOINPUT);
-            });
+    let (store_db, tree) = parse_reference_file(&checkpoint.db_fingerprint.path, encoding_data)
+        .unwrap_or_else(|e| {
+            utils::report_error(
+                e,
+                format!(
+                    "Failed to parse {}",
+                    checkpoint.db_fingerprint.path.display()
+                ),
+            );
+            exit(exitcode::NOINPUT);
+        });
     if store_db && !args.skip_db {
         match args.get_db_output() {
             Ok((db_output, db_path)) => {

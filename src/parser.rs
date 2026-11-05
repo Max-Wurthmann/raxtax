@@ -1,12 +1,10 @@
 use ahash::HashSet;
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
-use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, log_enabled, Level};
-use logging_timer::{time, timer};
+use logging_timer::time;
 use rayon::prelude::*;
 use regex::Regex;
-use std::time::Duration;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
@@ -43,15 +41,21 @@ fn map_dna_char(ch: char) -> u8 {
     }
 }
 
-/// Parses a reference FASTA or FASTQ file into a [`Tree`],
-/// next to the generated tree, returns a boolean indicating whether the tree was parsed from the file or loaded from a cached tree file. If a cached tree file is present but was built with a different k-mer size than specified, that is an error, since we have no way of knowing where the original reference file it was built from lives. Returns an error if there are issues reading the file
+/// Parses a reference FASTA or FASTQ file into a [`Tree`], returning a boolean indicating whether
+/// the tree was parsed from the file or loaded from a cached tree file.
+/// Only a `.bin` file is considered a cached tree (see [`classify_file`]); every other extension is
+/// parsed as a sequence file, so pointing `-d` at a large reference file never reads it into memory
+/// just to find out it is not a cached tree. If a cached tree file is present but was built with a
+/// different k-mer size than specified, that is an error, since we have no way of knowing where the
+/// original reference file it was built from lives. Returns an error if there are issues reading the
+/// file
 #[time("info", "Parsing References")]
 pub fn parse_reference_file(
     sequence_path: &PathBuf,
     encoding_data: KMerEncodingData,
-    n_references: usize,
 ) -> Result<(bool, Tree)> {
-    if let Ok(tree) = Tree::load_from_file(sequence_path) {
+    if matches!(classify_file(sequence_path).0, FileFormat::Bin) {
+        let tree = Tree::load_from_file(sequence_path)?;
         if tree.encoding_data.k != encoding_data.k {
             bail!(
                 "Cached database at {} was built with k={} but k={} was requested. Change requested k or point -d to the original reference file to rebuild the database.",
@@ -62,63 +66,30 @@ pub fn parse_reference_file(
         }
         return Ok((false, tree));
     }
-    let records = SequenceReader::from_file(sequence_path)?;
     Ok((
         true,
-        parse_reference_records(records, encoding_data, n_references)?,
+        Tree::build(|| SequenceReader::from_file(sequence_path), encoding_data)?,
     ))
 }
 
-/// Consumes a [`SequenceReader`] of labeled reference sequences, splits each
-/// label's `tax=<lineage>;<bin>?` annotation off and builds the resulting
-/// `Tree`.
-fn parse_reference_records(
-    records: SequenceReader,
-    encoding_data: KMerEncodingData,
-    n_references: usize,
-) -> Result<Tree> {
-    let regex = Regex::new(r"tax=([^;]+);([^;]+)*")?;
-    let (labels, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) = {
-        let _tmr = timer!(Level::Info; "Read file and create k-mer mapping");
-        let pb = if cfg!(test) {
-            ProgressBar::hidden()
-        } else {
-            ProgressBar::new(n_references as u64)
-                .with_style(
-                    ProgressStyle::with_template(
-                        "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
-                    )
-                    .unwrap()
-                    .progress_chars("##-"),
-                )
-                .with_message("Parsing Reference...")
-        };
-        pb.enable_steady_tick(Duration::from_millis(100));
+/// The `tax=<lineage>;<bin>?` annotation expected in every reference label.
+pub(crate) fn reference_label_regex() -> Result<Regex> {
+    Ok(Regex::new(r"tax=([^;]+);([^;]+)*")?)
+}
 
-        let mut labels: Vec<LineageBinPair> = Vec::new();
-        let mut sequences: Vec<Vec<u8>> = Vec::new();
-        for record in records {
-            let (label, sequence) = record?;
-            let caps = regex.captures(&label).context(format!(
-                "Unexpected taxonomical annotation detected in label {label}"
-            ))?;
-            let lineage = caps
-                .get(1)
-                .context(format!("No taxonomic string found in label {label}"))?
-                .as_str()
-                .to_owned();
-            let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
-            labels.push((lineage, bin));
-            sequences.push(sequence);
-            pb.inc(1);
-        }
-        pb.finish();
-        (labels, sequences)
-    };
-    if labels.is_empty() {
-        bail!("File is empty")
-    }
-    Tree::new(labels, sequences, encoding_data)
+/// Splits a reference label's `tax=<lineage>;<bin>?` annotation into its lineage and
+/// its optional taxonomic bin.
+pub(crate) fn parse_reference_label(regex: &Regex, label: &str) -> Result<LineageBinPair> {
+    let caps = regex.captures(label).context(format!(
+        "Unexpected taxonomical annotation detected in label {label}"
+    ))?;
+    let lineage = caps
+        .get(1)
+        .context(format!("No taxonomic string found in label {label}"))?
+        .as_str()
+        .to_owned();
+    let bin = caps.get(2).map(|bin| bin.as_str().to_owned());
+    Ok((lineage, bin))
 }
 
 /// Streams labeled sequences out of a FASTA file, record by record.
@@ -307,6 +278,11 @@ impl Iterator for SequenceReader {
     }
 }
 
+/// Upper bound on the number of bases a single batch may hold. `batch_size` alone is a
+/// record count, so for very long records (e.g. whole genomes) a batch can grow far beyond
+/// what the record count suggests, once per in-flight thread.
+const MAX_BATCH_BASES: usize = 1 << 24;
+
 /// Batches labeled sequences from an underlying iterator into fixed-size
 /// batches, skipping any sequences whose labels are in `seq_to_skip`.
 pub struct BatchedSequenceReader<'a> {
@@ -343,14 +319,17 @@ impl<'a> BatchedSequenceReader<'a> {
 impl<'a> Iterator for BatchedSequenceReader<'a> {
     type Item = Result<Vec<LabeledSequence>>;
 
-    /// Reads and returns up to `batch_size` queries. Returns `None` once the
-    /// underlying iterator has been fully consumed.
+    /// Reads and returns up to `batch_size` queries, or fewer if they already add up to
+    /// [`MAX_BATCH_BASES`] bases. Returns `None` once the underlying iterator has been fully
+    /// consumed.
     fn next(&mut self) -> Option<Self::Item> {
         let mut batch = Vec::with_capacity(self.batch_size);
-        while batch.len() < self.batch_size {
+        let mut bases = 0_usize;
+        while batch.len() < self.batch_size && bases < MAX_BATCH_BASES {
             match self.inner.next() {
                 Some(Ok((label, sequence))) => {
                     if !self.seq_to_skip.contains(&label) {
+                        bases += sequence.len();
                         batch.push((label, sequence));
                     }
                 }
@@ -481,14 +460,14 @@ mod tests {
 
     use itertools::Itertools;
 
+    use crate::tree::Tree;
     use crate::utils::{encode, reverse_complement, KMerEncodingData};
 
     use std::io::{Cursor, Write};
 
     use super::{
-        count_chars_in_file, count_sequences_in_file, parse_reference_file,
-        parse_reference_records, BatchedSequenceReader, FastaSequenceReader, FastqSequenceReader,
-        SequenceReader,
+        count_chars_in_file, count_sequences_in_file, parse_reference_file, BatchedSequenceReader,
+        FastaSequenceReader, FastqSequenceReader, SequenceReader,
     };
 
     #[test]
@@ -513,10 +492,13 @@ GTGCGCTATGCGA
 >Badabing|Badabum;tax=p:Phylum2,c:Class3,o:Order3,f:Family4,g:Genus4,s:Species5;
 ATACGCTTTGCGT";
 
-        let tree = parse_reference_records(
-            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
+        let tree = Tree::build(
+            || {
+                Ok(SequenceReader::Fasta(FastaSequenceReader::new(Box::new(
+                    Cursor::new(fasta_str),
+                ))))
+            },
             KMerEncodingData::new(8).unwrap(),
-            6,
         )
         .unwrap();
         for k in 0..tree.k_mer_map_offsets.len() - 1 {
@@ -684,10 +666,13 @@ AAACCCCGG";
          * 4: AAACCCCGG -> CCGGGGTTT
          */
 
-        let tree = parse_reference_records(
-            SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
+        let tree = Tree::build(
+            || {
+                Ok(SequenceReader::Fasta(FastaSequenceReader::new(Box::new(
+                    Cursor::new(fasta_str),
+                ))))
+            },
             KMerEncodingData::new(8).unwrap(),
-            5,
         )
         .unwrap();
         for k in 0..tree.k_mer_map_offsets.len() - 1 {
@@ -788,7 +773,7 @@ AAACCCCGG";
         )
         .unwrap();
         let (parsed, tree) =
-            parse_reference_file(&fastq_path, KMerEncodingData::new(8).unwrap(), 1).unwrap();
+            parse_reference_file(&fastq_path, KMerEncodingData::new(8).unwrap()).unwrap();
         assert!(parsed);
         assert_eq!(tree.lineages, vec!["p:Phylum1,c:Class1".to_string()]);
         assert_eq!(tree.num_tips, 1);
