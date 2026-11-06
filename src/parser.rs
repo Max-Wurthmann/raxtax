@@ -51,16 +51,18 @@ pub fn parse_reference_file(
     encoding_data: KMerEncodingData,
     n_references: usize,
 ) -> Result<(bool, Tree)> {
-    if let Ok(tree) = Tree::load_from_file(sequence_path) {
-        if tree.encoding_data.k != encoding_data.k {
-            bail!(
-                "Cached database at {} was built with k={} but k={} was requested. Change requested k or point -d to the original reference file to rebuild the database.",
-                sequence_path.display(),
-                tree.encoding_data.k,
-                encoding_data.k
-            );
+    if matches!(classify_file(sequence_path).0, FileFormat::Bin) {
+        if let Ok(tree) = Tree::load_from_file(sequence_path) {
+            if tree.encoding_data.k != encoding_data.k {
+                bail!(
+                    "Cached database at {} was built with k={} but k={} was requested. Change requested k or point -d to the original reference file to rebuild the database.",
+                    sequence_path.display(),
+                    tree.encoding_data.k,
+                    encoding_data.k
+                );
+            }
+            return Ok((false, tree));
         }
-        return Ok((false, tree));
     }
     let records = SequenceReader::from_file(sequence_path)?;
     Ok((
