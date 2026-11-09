@@ -58,16 +58,14 @@ where
     // `par_bridge` is used to convert the iterator into a parallel iterator, uses a mutex guard.
     // The `try_for_each_init` to init a threadlocal reusable buffer and fail fast on any error.
     batches.par_bridge().try_for_each_init(
-        || vec![0u16; tree.num_tips],
-        |intersect_buffer: &mut Vec<u16>, batch| -> Result<()> {
+        || vec![0u32; tree.num_tips],
+        |intersect_buffer: &mut Vec<u32>, batch| -> Result<()> {
             for (query_label, query_sequence) in &batch? {
                 pb.inc(1);
                 intersect_buffer.fill(0);
                 let tmr = timer!(Level::Debug; "K-mer Intersections");
                 let k_mers =
                     utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data);
-                debug_assert!(u16::try_from(k_mers.len()).is_ok());
-                let num_trials = k_mers.len() / 2;
                 for query_kmer in &k_mers {
                     tree.kmer_row(*query_kmer as usize).iter().for_each(
                         |sequence_id: &IndexType| {
@@ -81,8 +79,8 @@ where
                 }
                 drop(tmr);
                 let highest_hit_probs = prob::highest_hit_prob_per_reference(
-                    k_mers.len() as u16,
-                    num_trials,
+                    k_mers.len() as u32,
+                    k_mers.len() / 2,
                     intersect_buffer,
                 );
                 let (eval_res, bin_res) =

@@ -6,12 +6,12 @@ use statrs::function::factorial::ln_binomial;
 
 #[time("debug")]
 pub fn highest_hit_prob_per_reference(
-    total_num_k_mers: u16,
+    total_num_k_mers: u32,
     num_trials: usize,
-    intersection_sizes: &[u16],
+    intersection_sizes: &[u32],
 ) -> Vec<f64> {
     let intersection_size_counts = {
-        let mut counts: HashMap<u16, usize> = HashMap::new();
+        let mut counts: HashMap<u32, usize> = HashMap::new();
         intersection_sizes
             .iter()
             .for_each(|item| *counts.entry(*item).or_default() += 1);
@@ -38,9 +38,9 @@ pub fn highest_hit_prob_per_reference(
                     ),
                 )
             })
-            .collect::<HashMap<u16, f64>>()
+            .collect::<HashMap<u32, f64>>()
     } else {
-        let pmfs: Vec<(u16, Vec<f64>)> = iterative_pmfs_ln(
+        let pmfs: Vec<(u32, Vec<f64>)> = iterative_pmfs_ln(
             total_num_k_mers as u64,
             num_trials as u64,
             &intersection_size_counts,
@@ -87,7 +87,7 @@ pub fn highest_hit_prob_per_reference(
                         .sum::<f64>(),
                 )
             })
-            .collect::<HashMap<u16, f64>>()
+            .collect::<HashMap<u32, f64>>()
     };
     let highest_hit_probs = intersection_sizes
         .iter()
@@ -121,9 +121,9 @@ fn only_last_pmf(
 fn iterative_pmfs_ln(
     total_num_k_mers: u64,
     num_trials: u64,
-    intersection_sizes: &HashMap<u16, usize>,
+    intersection_sizes: &HashMap<u32, usize>,
     num_possible_kmer_sets: f64,
-) -> Vec<(u16, Vec<f64>)> {
+) -> Vec<(u32, Vec<f64>)> {
     intersection_sizes
         .iter()
         .map(|(&num_intersections, _)| {
