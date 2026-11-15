@@ -232,16 +232,8 @@ mod tests {
             "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
         ];
         let bins = vec![None; 5];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
         let tree = Tree::new(
             lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();
@@ -291,18 +283,8 @@ mod tests {
             "Animalia,Chordata,Mammalia,Carnivora,Felidae,Felis".into(),
         ];
         let bins = vec![None; 7];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
         let tree = Tree::new(
             lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();
@@ -365,8 +347,7 @@ mod tests {
                 None,
             ),
         ];
-        let sequences = vec![[0b00].repeat(9), [0b00].repeat(9), [0b00].repeat(9)];
-        let tree = Tree::new(lineages, sequences, KMerEncodingData::new(8).unwrap()).unwrap();
+        let tree = Tree::new(lineages, KMerEncodingData::new(8).unwrap()).unwrap();
         let confidence_values = vec![0.004, 0.004, 0.004];
         tree.print();
         let query_label = String::from("q");
@@ -411,18 +392,8 @@ mod tests {
             None,
             None,
         ];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
         let tree = Tree::new(
             lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();
@@ -455,18 +426,8 @@ mod tests {
             Some("BIN4".into()),
             Some("BIN3".into()),
         ];
-        let sequences = vec![
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-            [0b00].repeat(9),
-        ];
         let tree = Tree::new(
             lineages.into_iter().zip(bins).collect_vec(),
-            sequences,
             KMerEncodingData::new(8).unwrap(),
         )
         .unwrap();

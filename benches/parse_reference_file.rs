@@ -1,9 +1,25 @@
+use ahash::HashSet;
 use criterion::{criterion_group, criterion_main, Criterion};
-use raxtax::parser::{count_sequences_in_file, parse_reference_file};
+use raxtax::parser::{count_sequences_in_file, parse_reference_taxonomy, BatchedSequenceReader};
+use raxtax::tree::{KMerMap, Tree};
 use raxtax::utils::KMerEncodingData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Benchmarks `parse_reference_file` against a file named by the
+/// Parses the taxonomy of the reference file and builds the k-mer map over all of its sequences.
+fn parse_reference_file(path: &Path, k: u32, n_references: usize) -> (Tree, KMerMap) {
+    let tree =
+        parse_reference_taxonomy(path, KMerEncodingData::new(k).unwrap(), n_references).unwrap();
+    let references = BatchedSequenceReader::from_file(path, &HashSet::default(), tree.num_tips)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut kmer_map = KMerMap::new(&tree.encoding_data);
+    kmer_map.rebuild(&references, 0, &tree);
+    (tree, kmer_map)
+}
+
+/// Benchmarks parsing the taxonomy and building the k-mer map of the whole reference against a file named by the
 /// `PARSE_REF_BENCH_FILE` env var (falling back to the bundled example
 /// reference database), at a k-mer size named by `PARSE_REF_BENCH_K`
 /// (falling back to 11), and prints the number of references parsed.
@@ -30,17 +46,16 @@ fn bench_parse_reference_file(c: &mut Criterion) {
         b.iter(|| {
             parse_reference_file(
                 std::hint::black_box(&path),
-                std::hint::black_box(KMerEncodingData::new(k).unwrap()),
+                std::hint::black_box(k),
                 std::hint::black_box(n_references),
             )
-            .unwrap()
         });
     });
 
-    let (parsed_from_file, _tree) =
-        parse_reference_file(&path, KMerEncodingData::new(k).unwrap(), n_references).unwrap();
+    let (tree, _) = parse_reference_file(&path, k, n_references);
     println!(
-        "Parsed {n_references} references from {} at k={k} (freshly parsed: {parsed_from_file})",
+        "Parsed {} references from {} at k={k}",
+        tree.num_tips,
         path.display()
     );
 }

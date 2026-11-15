@@ -67,7 +67,7 @@ This creates a new folder `example/example_run` with the taxonomic assignments a
 ```text
 Options:
   -d, --database-path <DATABASE_PATH>
-          Path to the database fasta or bin file
+          Path to the database fasta or fastq file
   -i, --query-file <QUERY_FILE>
           Path to the query file
   -k, --kmer-size <KMER_SIZE>
@@ -77,18 +77,21 @@ Options:
           If 0, uses all available threads [default: 0]
       --query-batch-size <QUERY_BATCH_SIZE>
           Number of queries to read and process per batch.
-          Lower values can reduce memory usage while processing queries.
-          Passing 0 is equivalent to passing the total number of queries in the query file. [default: 0]
+          The intersection sizes of a whole batch are kept in memory,
+          which takes about 4 bytes * batch size * number of reference sequences.
+          Lower values reduce memory usage, but every batch takes one pass over the reference.
+          Passing 0 is equivalent to passing the total number of queries in the query file. [default: 4096]
+      --reference-batch-size <REFERENCE_BATCH_SIZE>
+          Number of reference sequences to read and turn into a k-mer map per batch.
+          Lower values reduce memory usage, but unless the whole reference fits into one batch,
+          the reference file is read once per query batch.
+          Passing 0 is equivalent to passing the total number of sequences in the reference file. [default: 0]
       --tsv
           Output primary result file in tsv format
       --binning
           Output best taxonomic bin for each query
-      --only-db
-          Create binary database and exit
-      --skip-db
-          Don't create the binary database for the reference sequences
   -c, --clean
-          Remove binary database and checkpoint files after a successful run
+          Remove checkpoint files after a successful run
   -o, --prefix <PREFIX>
           Output prefix [default: raxtax]
       --redo
@@ -109,7 +112,6 @@ Options:
 
 The database can be provided in FASTA or FASTQ format.
 It is possible to provide the file as a Gzip archive (`.gzip` or `.gz`).
-It is also possible to provide a binary database file created by `raxtax` (with the `.bin` extension).
 
 Sequence identifier should have the form `tax=<lineage>;`.
 Everything after `tax=` is parsed as a comma-separated list of lineage nodes and is terminated by a semicolon.
@@ -126,7 +128,7 @@ ACTCGATAC
 ### Input Query (`-i`)
 
 The queries can also be provided in FASTA or FASTQ format (optionally gzipped).
-For FASTA files, the sequence label should not contain the `>` character, as this will throw off the counter for the number of queries, which can affect not only the progress bar, but also the query batch size if left as default.
+For FASTA files, the sequence label should not contain the `>` character, as this will throw off the counter for the number of queries, which can throw off the progress bar.
 
 ```sh
 # example FASTA
@@ -180,20 +182,16 @@ Also note that odd k allow for slightly more efficient representation of the k-m
 
 ### Other Options
 
-`--query-batch-size` controls how many queries are read from the query file and processed at once.
-It defaults to `0`, which is equivalent to passing the total number of queries in the query file.
-Reducing this can reduce memory usage while processing queries.
-Often however, it is not necessary to change this value.
-The memory peak often occurs while processing the database and not the queries.
+`--query-batch-size` controls how many queries are read from the query file and processed at once (default `4096`, `0` means all queries at once).
+For every query in a batch, the number of k-mers it shares with every reference sequence is kept until the batch is finished, which takes about `4 bytes * batch size * number of reference sequences`.
+For large reference databases, reduce this value to lower the memory usage.
 
-`--only-db` can be used if you just want to create a binary database for the reference sequences and then run `raxtax` for many different query files.
-If the reference database is large this will save significant time on repeat execution.
-This option does not require `-i` to be specified and `raxtax` will terminate after creating the binary database.
+`--reference-batch-size` controls how many reference sequences are read and turned into a k-mer map at once (default `0`, meaning the whole reference database).
+By default, the k-mer map of the whole reference database is built once and kept in memory for the whole run.
+If that does not fit into memory, a smaller value streams the reference database in batches, so only the k-mer map of one batch is in memory at a time.
+In that case, the reference file is read once per query batch, so the runtime grows with the number of query batches: increase `--query-batch-size` as far as memory allows.
 
-`--skip-db` will skip the creation of the binary database.
-This is only recommended if you run with that database only once or it is very small.
-
-`--clean` will remove the binary database and checkpoint files (`raxtax.json` and `raxtax.ckp`) after a successful run. This is mainly intended for long runs that might get interrupted, but the binary database is not needed afterwards.
+`--clean` will remove the checkpoint files (`raxtax.json` and `raxtax.ckp`) after a successful run.
 
 `--threads` may be omitted most of the time and `raxtax` will use as many cores as your system has available. Because the analysis is *embarrassingly parallel*, this is a sensible default.
 However, if you experience problems due to hyper-threading, you might want to reduce the number of threads, to increase parallel efficiency.
@@ -218,9 +216,9 @@ An error message will be displayed if too many reference sequences are used with
 
 ## Checkpointing
 
-Since v.1.3.0 `raxtax` comes with default checkpointing to prevent data loss in case of unforeseen crashes (i.e. terminated by the OS scheduler). `raxtax` will create a binary database of the reference sequences in the output directory for faster loading on subsequent runs (disable this with `--skip-db`). Then, every time a query finishes, it will be written to the output files.
-To restart from the latest checkpoint, run `raxtax` with the same options for `-k <value> --tsv <bool> --prefix <path>`.
-The database path will be recovered from the checkpoint file.
+Since v.1.3.0 `raxtax` comes with default checkpointing to prevent data loss in case of unforeseen crashes (i.e. terminated by the OS scheduler). Every time a query batch finishes, its results will be written to the output files.
+To restart from the latest checkpoint, run `raxtax` with the same options for `-d <path> -k <value> --tsv <bool> --prefix <path>`.
+The checkpoint is only used if the database file is unchanged (same path, size and modification time).
 The log file and result files will be appended to in subsequent runs.
 
 **Caution**: Running with `--redo` will override any checkpoints!

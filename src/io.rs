@@ -8,7 +8,7 @@ use logging_timer::time;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
 
@@ -107,7 +107,6 @@ impl Checkpoint {
         }
         std::fs::remove_file(&self.checkpoint_file)?;
         std::fs::remove_file(&self.progress_file)?;
-        std::fs::remove_file(&self.db_fingerprint.path)?;
         Ok(())
     }
 }
@@ -135,12 +134,12 @@ pub fn write_build_info(out: &mut dyn Write) -> Result<()> {
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
-    /// Path to the database fasta or bin file
+    /// Path to the database fasta or fastq file
     #[arg(short, long)]
     pub database_path: PathBuf,
     /// Path to the query file
-    #[arg(short = 'i', long, required_unless_present = "only_db")]
-    pub query_file: Option<PathBuf>,
+    #[arg(short = 'i', long)]
+    pub query_file: PathBuf,
     /// k-mer size must satisfy 1 <= k <= 16.
     #[arg(short = 'k', long, value_parser = clap::value_parser!(u32).range(1..=16))]
     pub kmer_size: u32,
@@ -149,23 +148,25 @@ pub struct Args {
     #[arg(short, long, default_value_t = 0, verbatim_doc_comment)]
     pub threads: usize,
     /// Number of queries to read and process per batch.
-    /// Lower values can reduce memory usage while processing queries.
+    /// The intersection sizes of a whole batch are kept in memory,
+    /// which takes about 4 bytes * batch size * number of reference sequences.
+    /// Lower values reduce memory usage, but every batch takes one pass over the reference.
     /// Passing 0 is equivalent to passing the total number of queries in the query file.
-    #[arg(long, default_value_t = 0, verbatim_doc_comment)]
+    #[arg(long, default_value_t = 4096, verbatim_doc_comment)]
     pub query_batch_size: usize,
+    /// Number of reference sequences to read and turn into a k-mer map per batch.
+    /// Lower values reduce memory usage, but unless the whole reference fits into one batch,
+    /// the reference file is read once per query batch.
+    /// Passing 0 is equivalent to passing the total number of sequences in the reference file.
+    #[arg(long, default_value_t = 0, verbatim_doc_comment)]
+    pub reference_batch_size: usize,
     /// Output primary result file in tsv format
     #[arg(long)]
     pub tsv: bool,
     /// Output best taxonomic bin for each query
     #[arg(long)]
     pub binning: bool,
-    /// Create binary database and exit
-    #[arg(long, conflicts_with = "skip_db")]
-    pub only_db: bool,
-    /// Don't create the binary database for the reference sequences
-    #[arg(long)]
-    pub skip_db: bool,
-    /// Remove binary database and checkpoint files after a successful run
+    /// Remove checkpoint files after a successful run
     #[arg(short, long)]
     pub clean: bool,
     /// Output prefix
@@ -312,27 +313,8 @@ impl Args {
         self.prefix.clone()
     }
 
-    pub fn get_db_output(&self) -> Result<(BufWriter<File>, PathBuf)> {
-        let prefix = self.get_prefix();
-        let db_path = prefix
-            .join(
-                self.database_path
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("database")),
-            )
-            .with_extension("bin");
-        if db_path.is_file() && !self.redo {
-            bail!("Output database file {} already exists! Delete it or run with --redo to force overriding existing files!", db_path.display());
-        }
-        info!("Created binary database at {}", db_path.display());
-        Ok((
-            std::fs::File::create(db_path.clone()).map(BufWriter::new)?,
-            db_path,
-        ))
-    }
-
     fn checkpoint_valid(&self, checkpoint: &Checkpoint) -> bool {
-        let reevaluated_fingerprint = FileFingerprint::new(&checkpoint.db_fingerprint.path);
+        let reevaluated_fingerprint = FileFingerprint::new(&self.database_path);
         match reevaluated_fingerprint {
             Ok(fp) => {
                 self.tsv == checkpoint.tsv

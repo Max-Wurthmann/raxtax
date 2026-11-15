@@ -1,5 +1,6 @@
-use anyhow::Result;
-use std::time::Duration;
+use ahash::HashSet;
+use anyhow::{ensure, Result};
+use std::{path::Path, time::Duration};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::Level;
@@ -8,7 +9,8 @@ use rayon::prelude::*;
 
 use crate::io::{Args, ResultsToPrint};
 use crate::lineage;
-use crate::tree::{IndexType, Tree};
+use crate::parser::{BatchedSequenceReader, LabeledSequence};
+use crate::tree::{IndexType, KMerMap, Tree};
 use crate::{prob, utils};
 
 #[derive(Debug, Clone, Copy)]
@@ -29,17 +31,33 @@ impl RaxtaxSettings {
     }
 }
 
+/// Classifies the queries batch by batch. For every query batch the reference is streamed
+/// in batches of `reference_batch_size` sequences (0 = all at once); for each reference batch
+/// a k-mer map is built and the query batch, split into `10 * n_threads` chunks, is
+/// intersected against it in parallel. After the full pass over the reference, the results of
+/// the query batch are final and are sent to the IO-thread.
+/// If the whole reference fits into a single batch, its k-mer map is only built once.
 #[time("info")]
 pub fn raxtax<I>(
-    batches: I,
+    query_batches: I,
     tree: &Tree,
+    reference_path: &Path,
+    reference_batch_size: usize,
     sender: &crossbeam::channel::Sender<ResultsToPrint>,
     settings: RaxtaxSettings,
     n_queries: usize,
 ) -> Result<()>
 where
-    I: Iterator<Item = Result<Vec<(String, Vec<u8>)>>> + Send,
+    I: Iterator<Item = Result<Vec<LabeledSequence>>>,
 {
+    let num_tips = tree.num_tips;
+    let mut kmer_map = KMerMap::new(&tree.encoding_data);
+    let single_reference_batch = reference_batch_size == 0 || reference_batch_size >= num_tips;
+    if single_reference_batch {
+        let _tmr = timer!(Level::Info; "Creating k-mer map");
+        for_each_reference_batch(reference_path, num_tips, tree, &mut kmer_map, |_| {})?;
+    }
+
     let pb = if cfg!(test) {
         ProgressBar::hidden()
     } else {
@@ -55,21 +73,162 @@ where
     };
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // `par_bridge` is used to convert the iterator into a parallel iterator, uses a mutex guard.
-    // The `try_for_each_init` to init a threadlocal reusable buffer and fail fast on any error.
-    batches.par_bridge().try_for_each_init(
-        || vec![0u32; tree.num_tips],
-        |intersect_buffer: &mut Vec<u32>, batch| -> Result<()> {
-            for (query_label, query_sequence) in &batch? {
-                pb.inc(1);
-                intersect_buffer.fill(0);
-                let tmr = timer!(Level::Debug; "K-mer Intersections");
-                let k_mers =
-                    utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data);
-                for query_kmer in &k_mers {
-                    tree.kmer_row(*query_kmer as usize).iter().for_each(
+    let n_chunks = 10 * rayon::current_num_threads();
+    // intersection sizes of every query in the batch with every reference sequence,
+    // query i owns intersections[i * num_tips..(i + 1) * num_tips]
+    let mut intersections: Vec<u32> = Vec::new();
+    for batch in query_batches {
+        let batch = batch?;
+        let chunk_size = batch.len().div_ceil(n_chunks);
+        let query_kmers: Vec<Vec<u32>> = batch
+            .par_iter()
+            .map(|(_, query_sequence)| {
+                utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data)
+            })
+            .collect();
+        // zero the buffer in parallel instead of serially on this thread, a fresh allocation
+        // (only for the first and the last, smaller batch) is zeroed lazily by the OS
+        if intersections.len() == batch.len() * num_tips {
+            intersections
+                .par_chunks_mut(chunk_size * num_tips)
+                .for_each(|chunk| chunk.fill(0));
+        } else {
+            intersections = vec![0; batch.len() * num_tips];
+        }
+
+        let tmr = timer!(Level::Debug; "K-mer Intersections");
+        if single_reference_batch {
+            accumulate_intersections(
+                &kmer_map,
+                &query_kmers,
+                &mut intersections,
+                num_tips,
+                chunk_size,
+            );
+        } else {
+            for_each_reference_batch(
+                reference_path,
+                reference_batch_size,
+                tree,
+                &mut kmer_map,
+                |kmer_map| {
+                    accumulate_intersections(
+                        kmer_map,
+                        &query_kmers,
+                        &mut intersections,
+                        num_tips,
+                        chunk_size,
+                    )
+                },
+            )?;
+        }
+        drop(tmr);
+
+        batch
+            .par_chunks(chunk_size)
+            .zip(query_kmers.par_chunks(chunk_size))
+            .zip(intersections.par_chunks(chunk_size * num_tips))
+            .try_for_each(|((queries, k_mers), intersections)| -> Result<()> {
+                for (((query_label, query_sequence), k_mers), intersect_buffer) in queries
+                    .iter()
+                    .zip(k_mers)
+                    .zip(intersections.chunks(num_tips))
+                {
+                    let highest_hit_probs = prob::highest_hit_prob_per_reference(
+                        k_mers.len() as u32,
+                        k_mers.len() / 2,
+                        intersect_buffer,
+                    );
+                    let (eval_res, bin_res) = lineage::Lineage::new(
+                        query_label,
+                        tree,
+                        highest_hit_probs,
+                        settings.binning,
+                    )
+                    .evaluate();
+                    assert!(!eval_res.is_empty());
+                    let primary_results = utils::get_results(&eval_res);
+                    let tsv_results = if settings.tsv {
+                        Some(utils::get_results_tsv(
+                            &eval_res,
+                            utils::decompress_sequence(query_sequence),
+                        ))
+                    } else {
+                        None
+                    };
+                    let binning_result = if settings.binning {
+                        Some(utils::get_results_binning(bin_res))
+                    } else {
+                        None
+                    };
+                    sender.send(ResultsToPrint::new(
+                        query_label.clone(),
+                        primary_results,
+                        tsv_results,
+                        binning_result,
+                    ))?;
+                    pb.inc(1);
+                }
+                Ok(())
+            })?;
+    }
+
+    pb.finish();
+    Ok(())
+}
+
+/// Streams the reference file in batches of `batch_size` sequences, rebuilds `kmer_map`
+/// for each batch and hands it to `f`.
+fn for_each_reference_batch(
+    reference_path: &Path,
+    batch_size: usize,
+    tree: &Tree,
+    kmer_map: &mut KMerMap,
+    mut f: impl FnMut(&KMerMap),
+) -> Result<()> {
+    let no_skip = HashSet::default();
+    let mut n_references = 0;
+    for batch in BatchedSequenceReader::from_file(reference_path, &no_skip, batch_size)? {
+        let batch = batch?;
+        ensure!(
+            n_references + batch.len() <= tree.num_tips,
+            "{} contains more sequences than when it was first parsed. Was it modified during the run?",
+            reference_path.display()
+        );
+        kmer_map.rebuild(&batch, n_references, tree);
+        n_references += batch.len();
+        f(kmer_map);
+    }
+    ensure!(
+        n_references == tree.num_tips,
+        "{} contains fewer sequences than when it was first parsed. Was it modified during the run?",
+        reference_path.display()
+    );
+    Ok(())
+}
+
+/// Adds the intersection sizes of every query with the reference sequences of `kmer_map` to
+/// `intersections` (query i owns `intersections[i * num_tips..(i + 1) * num_tips]`).
+/// The queries are processed in parallel in chunks of `chunk_size`.
+fn accumulate_intersections(
+    kmer_map: &KMerMap,
+    query_kmers: &[Vec<u32>],
+    intersections: &mut [u32],
+    num_tips: usize,
+    chunk_size: usize,
+) {
+    query_kmers
+        .par_chunks(chunk_size)
+        .zip(intersections.par_chunks_mut(chunk_size * num_tips))
+        .for_each(|(query_kmers, intersections)| {
+            for (k_mers, intersect_buffer) in
+                query_kmers.iter().zip(intersections.chunks_mut(num_tips))
+            {
+                for query_kmer in k_mers {
+                    kmer_map.kmer_row(*query_kmer as usize).iter().for_each(
                         |sequence_id: &IndexType| {
                             // cast is necessary, because sequence_id is u32 if not cfg(huge_db)
+                            // SAFETY: sequence ids are sorted indices into the tree, so < num_tips
                             #[allow(clippy::unnecessary_cast)]
                             unsafe {
                                 *intersect_buffer.get_unchecked_mut(*sequence_id as usize) += 1
@@ -77,41 +236,73 @@ where
                         },
                     );
                 }
-                drop(tmr);
-                let highest_hit_probs = prob::highest_hit_prob_per_reference(
-                    k_mers.len() as u32,
-                    k_mers.len() / 2,
-                    intersect_buffer,
-                );
-                let (eval_res, bin_res) =
-                    lineage::Lineage::new(query_label, tree, highest_hit_probs, settings.binning)
-                        .evaluate();
-                assert!(!eval_res.is_empty());
-                let primary_results = utils::get_results(&eval_res);
-                let tsv_results = if settings.tsv {
-                    Some(utils::get_results_tsv(
-                        &eval_res,
-                        utils::decompress_sequence(query_sequence),
-                    ))
-                } else {
-                    None
-                };
-                let binning_result = if settings.binning {
-                    Some(utils::get_results_binning(bin_res))
-                } else {
-                    None
-                };
-                sender.send(ResultsToPrint::new(
-                    query_label.clone(),
-                    primary_results,
-                    tsv_results,
-                    binning_result,
-                ))?;
             }
-            Ok(())
-        },
-    )?;
+        });
+}
 
-    pb.finish();
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use ahash::HashSet;
+    use itertools::Itertools;
+    use std::io::Cursor;
+
+    use super::{accumulate_intersections, for_each_reference_batch};
+    use crate::parser::{parse_reference_taxonomy, FastaSequenceReader, LabeledSequence};
+    use crate::tree::KMerMap;
+    use crate::utils::{seq_to_unique_minenc_canon_kmers, KMerEncodingData};
+
+    #[test]
+    fn test_batched_reference_intersections_match_single_batch() {
+        // lineages deliberately not in sorted order, so file order != sorted order
+        let reference_str = ">r0;tax=p:B,c:B2;\nACGTTGCAAGCTTAGC\n\
+                             >r1;tax=p:A,c:A1;\nACGTTGCAAGGTTAGA\n\
+                             >r2;tax=p:C,c:C1;\nTTTTGGGGCCCCAAAA\n\
+                             >r3;tax=p:A,c:A1;\nACGTACGTACGTACGT\n\
+                             >r4;tax=p:B,c:B1;\nGCTAAGCTTGCAACGT\n";
+        let query_str = ">q0\nACGTTGCAAGCTTAGC\n>q1\nTTTTGGGGCCCCAAAT\n>q2\nACGTACGTACGAACGT\n";
+        let path = std::env::temp_dir().join("raxtax_test_batched_reference.fasta");
+        std::fs::write(&path, reference_str).unwrap();
+
+        let tree = parse_reference_taxonomy(&path, KMerEncodingData::new(5).unwrap(), 5).unwrap();
+        let num_tips = tree.num_tips;
+        let kmers =
+            |sequence: &[u8]| seq_to_unique_minenc_canon_kmers(sequence, &tree.encoding_data);
+        let read = |s: &'static str| -> Vec<LabeledSequence> {
+            FastaSequenceReader::new(Box::new(Cursor::new(s)))
+                .try_collect()
+                .unwrap()
+        };
+        let query_kmers = read(query_str)
+            .iter()
+            .map(|(_, sequence)| kmers(sequence))
+            .collect_vec();
+
+        // brute force: intersect the k-mer sets directly, placing each reference at its sorted index
+        let mut expected = vec![0_u32; query_kmers.len() * num_tips];
+        for (file_idx, (_, sequence)) in read(reference_str).iter().enumerate() {
+            let reference_kmers: HashSet<u32> = kmers(sequence).into_iter().collect();
+            for (query_idx, q) in query_kmers.iter().enumerate() {
+                expected[query_idx * num_tips + tree.sorted_idx[file_idx] as usize] =
+                    q.iter().filter(|k| reference_kmers.contains(k)).count() as u32;
+            }
+        }
+        assert!(expected.iter().any(|&c| c > 0));
+
+        for (batch_size, chunk_size) in [(5, 3), (1, 1), (2, 2), (3, 1), (4, 3)] {
+            let mut kmer_map = KMerMap::new(&tree.encoding_data);
+            let mut intersections = vec![0_u32; query_kmers.len() * num_tips];
+            for_each_reference_batch(&path, batch_size, &tree, &mut kmer_map, |kmer_map| {
+                accumulate_intersections(
+                    kmer_map,
+                    &query_kmers,
+                    &mut intersections,
+                    num_tips,
+                    chunk_size,
+                )
+            })
+            .unwrap();
+            assert_eq!(intersections, expected, "reference batch size {batch_size}");
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
 }

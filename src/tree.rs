@@ -1,18 +1,12 @@
 use anyhow::Result;
-use std::{
-    fs::File,
-    io::{BufWriter, Read},
-    path::PathBuf,
-};
 
-use indicatif::{HumanBytes, ProgressBar, ProgressIterator, ProgressStyle};
+use indicatif::HumanBytes;
 use itertools::Itertools;
 use log::{debug, log_enabled, Level};
 use logging_timer::time;
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    parser::LineageBinPair,
+    parser::{LabeledSequence, LineageBinPair},
     utils::{seq_to_unique_minenc_canon_kmers, KMerEncodingData},
 };
 
@@ -34,16 +28,17 @@ fn check_lineage_size(db_size: usize) {
 #[cfg(feature = "huge_db")]
 fn check_lineage_size(_: usize) {}
 
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// The taxonomy of the reference database. Reference sequences are indexed in
+/// lineage-sorted order, so that every `Node::confidence_range` covers a contiguous
+/// range of them.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Tree {
     pub root: Node,
     pub lineages: Vec<String>,
     pub bins: Vec<String>,
 
-    // CSR layout: for k-mer `k`, the sequences (sequenceIDs) containing it are
-    // k_mer_map_data[k_mer_map_offsets[k]..k_mer_map_offsets[k + 1]] (see `Tree::kmer_row`)
-    pub k_mer_map_offsets: Vec<usize>,
-    pub k_mer_map_data: Vec<IndexType>,
+    // maps a reference sequence's position in the reference file to its (lineage-sorted) index
+    pub sorted_idx: Vec<IndexType>,
 
     pub encoding_data: KMerEncodingData,
     pub bin_idx_to_lineage_idxs: Vec<Vec<usize>>,
@@ -52,19 +47,27 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Builds the taxonomy from the reference labels, given in reference file order.
     #[time("debug", "Tree::{}")]
-    pub fn new(
-        labels: Vec<(String, Option<String>)>,
-        sequences: Vec<Vec<u8>>,
-        encoding_data: KMerEncodingData,
-    ) -> Result<Self> {
+    pub fn new(mut labels: Vec<LineageBinPair>, encoding_data: KMerEncodingData) -> Result<Self> {
         check_lineage_size(labels.len());
         let mut root = Node::new(String::from("root"), 0, NodeType::Inner);
-        let mut lineage_sequence_pairs = labels.into_iter().zip_eq(sequences).collect_vec();
 
-        lineage_sequence_pairs.sort_by(|(l1, _), (l2, _)| l1.cmp(l2));
+        // stable sort of the file positions by label, so the sequences can be streamed in file
+        // order later and mapped to their sorted index via `sorted_idx`
+        let mut order = (0..labels.len()).collect_vec();
+        order.sort_by(|&a, &b| labels[a].cmp(&labels[b]));
+        let mut sorted_idx = vec![IndexType::default(); labels.len()];
+        for (idx, &file_idx) in order.iter().enumerate() {
+            sorted_idx[file_idx] = idx as IndexType;
+        }
+        let sorted_lineages = order
+            .into_iter()
+            .map(|file_idx| std::mem::take(&mut labels[file_idx]))
+            .collect_vec();
+
         let mut confidence_idx = 0_usize;
-        for ((lineage, _), _) in &lineage_sequence_pairs {
+        for (lineage, _) in &sorted_lineages {
             let levels = lineage.split(',').collect_vec();
             let last_level_idx = levels.len() - 1;
             let mut current_node = &mut root;
@@ -107,8 +110,6 @@ impl Tree {
             current_node.confidence_range.1 = confidence_idx;
         }
         root.confidence_range.1 = confidence_idx;
-        let (sorted_lineages, sequences): (Vec<LineageBinPair>, Vec<Vec<u8>>) =
-            lineage_sequence_pairs.into_iter().unzip();
 
         let mut bin_idx_to_lineage_idxs: Vec<Vec<usize>> = Vec::new();
         let bin_id_idx_pairs = sorted_lineages
@@ -137,83 +138,11 @@ impl Tree {
         let (bins, _): (Vec<String>, Vec<usize>) = bin_id_idx_pairs.into_iter().unzip();
         let (lineages, _): (Vec<String>, Vec<Option<String>>) = sorted_lineages.into_iter().unzip();
 
-        // Build the k-mer map as a CSR structure (offsets + flat data), reusing a
-        // single offsets-sized vector for counting, the prefix sum, and the fill
-        // cursor to avoid any allocation proportional to `n_unique_codes` beyond it.
-        let n = encoding_data.n_unique_codes as usize;
-        let mut k_mer_map_offsets = vec![0_usize; n + 1];
-
-        // pass 1: count unique (k-mer, sequence) occurrences per k-mer, shifted one
-        // slot to the right (k_mer_map_offsets[k + 1] holds the count for k-mer k)
-        // the unique k-mers are recomputed per sequence instead of being kept for all
-        // sequences at once, as that would need to coexist in memory with the k_mer_map
-        for sequence in &sequences {
-            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, &encoding_data) {
-                k_mer_map_offsets[k_mer as usize + 1] += 1;
-            }
-        }
-
-        // prefix sum in place -> k_mer_map_offsets[k] is now the CSR row start for k-mer k
-        for i in 0..n {
-            k_mer_map_offsets[i + 1] += k_mer_map_offsets[i];
-        }
-
-        let mut k_mer_map_data = vec![IndexType::default(); k_mer_map_offsets[n]];
-
-        let pb = if cfg!(test) {
-            ProgressBar::hidden()
-        } else {
-            ProgressBar::new(sequences.len() as u64).with_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
-                )
-                .unwrap()
-                .progress_chars("##-"),
-            )
-        };
-
-        // pass 2: fill data, recomputing the unique k-mers of each sequence,
-        // temporarily reusing k_mer_map_offsets[0..n] as a
-        // per-k-mer write cursor (destructive: k_mer_map_offsets[k] ends up equal
-        // to its own former row-end, i.e. shifted one slot from where it started)
-        for (idx, sequence) in sequences
-            .iter()
-            .enumerate()
-            .progress_with(pb)
-            .with_message("Creating k-mer map...")
-        {
-            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, &encoding_data) {
-                let pos = &mut k_mer_map_offsets[k_mer as usize];
-                k_mer_map_data[*pos] = idx as IndexType;
-                *pos += 1;
-            }
-        }
-
-        // undo the shift from pass 2 to restore correct row-start offsets
-        for i in (0..n).rev() {
-            k_mer_map_offsets[i + 1] = k_mer_map_offsets[i];
-        }
-        k_mer_map_offsets[0] = 0;
-
-        if log_enabled!(Level::Debug) {
-            // log the size of the k_mer_map
-            let offsets_size = k_mer_map_offsets.capacity() * size_of::<usize>();
-            let data_size = k_mer_map_data.capacity() * size_of::<IndexType>();
-
-            debug!(
-                "size of k_mer_map: {} of offsets, {} of data, {} total",
-                HumanBytes(offsets_size as u64),
-                HumanBytes(data_size as u64),
-                HumanBytes((offsets_size + data_size) as u64)
-            );
-        }
-
         Ok(Self {
             root,
             lineages,
             bins: bins.into_iter().unique().collect_vec(),
-            k_mer_map_offsets,
-            k_mer_map_data,
+            sorted_idx,
             encoding_data,
             bin_idx_to_lineage_idxs,
             lineage_idx_to_bin_idx,
@@ -225,30 +154,6 @@ impl Tree {
         self.root.print(0);
     }
 
-    pub fn kmer_row(&self, kmer: usize) -> &[IndexType] {
-        &self.k_mer_map_data[self.k_mer_map_offsets[kmer]..self.k_mer_map_offsets[kmer + 1]]
-    }
-
-    #[time("debug")]
-    pub fn save_to_file(&self, mut output: BufWriter<File>) -> Result<()> {
-        if log_enabled!(Level::Info) {
-            eprintln!("[INFO ] Writing database to file...");
-        }
-        bincode::serialize_into(&mut output, &self)?;
-        Ok(())
-    }
-
-    pub fn load_from_file(path: &PathBuf) -> Result<Self> {
-        if log_enabled!(Level::Info) {
-            eprintln!("[INFO ] Trying to read from database file...");
-        }
-        let mut file = File::open(path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        let decoded: Self = bincode::deserialize(&buffer)?;
-        Ok(decoded)
-    }
-
     pub fn is_inner_taxon_node(&self, node: &Node) -> bool {
         node.node_type == NodeType::Inner
     }
@@ -258,14 +163,104 @@ impl Tree {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
+/// Maps each minimally-encoded canonical k-mer to the (lineage-sorted) indices of the
+/// reference sequences of one reference batch that contain it.
+///
+/// CSR layout: for k-mer `k`, the sequences (sequenceIDs) containing it are
+/// data[offsets[k]..offsets[k + 1]] (see [`KMerMap::kmer_row`])
+pub struct KMerMap {
+    pub offsets: Vec<usize>,
+    pub data: Vec<IndexType>,
+}
+
+impl KMerMap {
+    pub fn new(encoding_data: &KMerEncodingData) -> Self {
+        Self {
+            offsets: vec![0_usize; encoding_data.n_unique_codes as usize + 1],
+            data: Vec::new(),
+        }
+    }
+
+    /// Rebuilds the map for a batch of reference sequences, where `sequences[0]` is the
+    /// `first_file_idx`-th sequence of the reference file. The buffers are reused across
+    /// batches, a single offsets-sized vector serves for counting, the prefix sum, and the
+    /// fill cursor to avoid any allocation proportional to `n_unique_codes` beyond it.
+    #[time("debug", "KMerMap::{}")]
+    pub fn rebuild(&mut self, sequences: &[LabeledSequence], first_file_idx: usize, tree: &Tree) {
+        let encoding_data = &tree.encoding_data;
+        let sorted_idx = &tree.sorted_idx[first_file_idx..first_file_idx + sequences.len()];
+        let n = encoding_data.n_unique_codes as usize;
+        let offsets = &mut self.offsets;
+        offsets.fill(0);
+
+        // pass 1: count unique (k-mer, sequence) occurrences per k-mer, shifted one
+        // slot to the right (offsets[k + 1] holds the count for k-mer k)
+        // the unique k-mers are recomputed per sequence instead of being kept for all
+        // sequences at once, as that would need to coexist in memory with the k-mer map
+        for (_, sequence) in sequences {
+            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, encoding_data) {
+                offsets[k_mer as usize + 1] += 1;
+            }
+        }
+
+        // prefix sum in place -> offsets[k] is now the CSR row start for k-mer k
+        for i in 0..n {
+            offsets[i + 1] += offsets[i];
+        }
+
+        self.data.clear();
+        self.data.resize(offsets[n], IndexType::default());
+
+        // pass 2: fill data, recomputing the unique k-mers of each sequence,
+        // temporarily reusing offsets[0..n] as a per-k-mer write cursor
+        // (destructive: offsets[k] ends up equal to its own former row-end,
+        // i.e. shifted one slot from where it started)
+        // sequences are visited in sorted-index order, so every row ends up ascending, which
+        // keeps the scattered increments into the intersection buffers cache-friendly
+        let mut order = (0..sequences.len()).collect_vec();
+        order.sort_unstable_by_key(|&i| sorted_idx[i]);
+        for i in order {
+            let idx = sorted_idx[i];
+            for k_mer in seq_to_unique_minenc_canon_kmers(&sequences[i].1, encoding_data) {
+                let pos = &mut offsets[k_mer as usize];
+                self.data[*pos] = idx;
+                *pos += 1;
+            }
+        }
+
+        // undo the shift from pass 2 to restore correct row-start offsets
+        for i in (0..n).rev() {
+            offsets[i + 1] = offsets[i];
+        }
+        offsets[0] = 0;
+
+        if log_enabled!(Level::Debug) {
+            // log the size of the k-mer map
+            let offsets_size = self.offsets.capacity() * size_of::<usize>();
+            let data_size = self.data.capacity() * size_of::<IndexType>();
+
+            debug!(
+                "size of k-mer map: {} of offsets, {} of data, {} total",
+                HumanBytes(offsets_size as u64),
+                HumanBytes(data_size as u64),
+                HumanBytes((offsets_size + data_size) as u64)
+            );
+        }
+    }
+
+    pub fn kmer_row(&self, kmer: usize) -> &[IndexType] {
+        &self.data[self.offsets[kmer]..self.offsets[kmer + 1]]
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
 enum NodeType {
     Inner,
     Taxon,
     Sequence,
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Node {
     pub label: String,
     pub confidence_range: (usize, usize),

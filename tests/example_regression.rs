@@ -84,7 +84,7 @@ fn example_regression() {
         .arg(root.join("example/diptera_queries.fasta"))
         .arg("-o")
         .arg(&out_dir)
-        .args(["--skip-db", "--redo"])
+        .arg("--redo")
         .output()
         .expect("failed to run raxtax");
     assert!(

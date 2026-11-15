@@ -4,9 +4,8 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use log::Level;
 use logging_timer::timer;
-use raxtax::io::FileFingerprint;
 use raxtax::io::{self, ResultsToPrint};
-use raxtax::parser::{count_sequences_in_file, parse_reference_file, BatchedSequenceReader};
+use raxtax::parser::{count_sequences_in_file, parse_reference_taxonomy, BatchedSequenceReader};
 use raxtax::raxtax::{raxtax, RaxtaxSettings};
 use raxtax::utils::{self, KMerEncodingData};
 use std::io::Write;
@@ -22,7 +21,7 @@ fn main() {
             log: mut log_output,
             progress: mut progress_output,
         },
-        mut checkpoint,
+        checkpoint,
     ) = args.get_output().unwrap_or_else(|e| {
         if args.verbosity.log_level_filter() >= Level::Error {
             eprintln!("\x1b[31m[ERROR]\x1b[0m {e}");
@@ -74,59 +73,22 @@ fn main() {
         );
         exit(exitcode::NOINPUT);
     });
-    let (store_db, tree) =
-        parse_reference_file(&checkpoint.db_fingerprint.path, encoding_data, n_references)
-            .unwrap_or_else(|e| {
-                utils::report_error(
-                    e,
-                    format!(
-                        "Failed to parse {}",
-                        checkpoint.db_fingerprint.path.display()
-                    ),
-                );
-                exit(exitcode::NOINPUT);
-            });
-    if store_db && !args.skip_db {
-        match args.get_db_output() {
-            Ok((db_output, db_path)) => {
-                if let Err(e) = tree.save_to_file(db_output) {
-                    utils::report_error(e, "Failed to write database");
-                    exit(exitcode::IOERR);
-                };
-                if let Err(e) = FileFingerprint::new(&db_path).and_then(|fp| {
-                    checkpoint.db_fingerprint = fp;
-                    checkpoint.save()?;
-                    Ok(())
-                }) {
-                    utils::report_error(e, "Failed to write checkpoint! Continuing without...");
-                };
-            }
-            Err(e) => {
-                utils::report_error(
-                    e,
-                    "Could not create database! Rerun with --skip-db to skip this step.",
-                );
-                exit(exitcode::CANTCREAT);
-            }
-        }
-    } else {
-        checkpoint.save().unwrap_or_else(|e| {
-            utils::report_error(e, "Failed to write checkpoint! Continuing without...")
+    let tree = parse_reference_taxonomy(&args.database_path, encoding_data, n_references)
+        .unwrap_or_else(|e| {
+            utils::report_error(
+                e,
+                format!("Failed to parse {}", args.database_path.display()),
+            );
+            exit(exitcode::NOINPUT);
         });
-    }
-
-    if args.only_db {
-        // need to drop the timer manually before exiting, otherwise the timer will not be printed
-        drop(total_tmr);
-        exit(exitcode::OK);
-    }
+    checkpoint.save().unwrap_or_else(|e| {
+        utils::report_error(e, "Failed to write checkpoint! Continuing without...")
+    });
 
     let settings = RaxtaxSettings::from_args(&args);
 
-    let n_threads = rayon::current_num_threads();
-
-    let query_file = args.query_file.clone().unwrap();
-    let n_queries = count_sequences_in_file(&query_file).unwrap_or_else(|e| {
+    let query_file = &args.query_file;
+    let n_queries = count_sequences_in_file(query_file).unwrap_or_else(|e| {
         utils::report_error(
             e,
             format!("Failed to count sequences in {}", query_file.display()),
@@ -135,21 +97,12 @@ fn main() {
     });
     let n_queries_remaining = n_queries.saturating_sub(checkpoint.processed_queries.len());
 
-    let batch_size = {
-        let mut b_size = if args.query_batch_size == 0 {
-            n_queries_remaining
-        } else {
-            args.query_batch_size.min(n_queries_remaining)
-        };
-
-        if n_threads > 1 {
-            // dividy by n_threads to properly distribute the work across threads
-            // divide by 10 to improve load balancing
-            b_size /= 10 * n_threads
-        }
-
-        b_size.max(100)
-    };
+    let batch_size = if args.query_batch_size == 0 {
+        n_queries_remaining
+    } else {
+        args.query_batch_size.min(n_queries_remaining)
+    }
+    .max(1);
 
     let (sender, receiver) = crossbeam::channel::unbounded::<ResultsToPrint>();
     let writer_handle = std::thread::spawn(move || -> Result<()> {
@@ -173,13 +126,21 @@ fn main() {
     });
 
     let query_reader =
-        BatchedSequenceReader::from_file(&query_file, &checkpoint.processed_queries, batch_size)
+        BatchedSequenceReader::from_file(query_file, &checkpoint.processed_queries, batch_size)
             .unwrap_or_else(|e| {
                 utils::report_error(e, format!("Failed to open {}", query_file.display()));
                 exit(exitcode::NOINPUT);
             });
 
-    if let Err(e) = raxtax(query_reader, &tree, &sender, settings, n_queries_remaining) {
+    if let Err(e) = raxtax(
+        query_reader,
+        &tree,
+        &args.database_path,
+        args.reference_batch_size,
+        &sender,
+        settings,
+        n_queries_remaining,
+    ) {
         if e.is::<crossbeam::channel::SendError<ResultsToPrint>>() {
             utils::report_error(
                 e,
