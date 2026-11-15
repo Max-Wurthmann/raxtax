@@ -81,6 +81,7 @@ fn main() {
             );
             exit(exitcode::NOINPUT);
         });
+
     checkpoint.save().unwrap_or_else(|e| {
         utils::report_error(e, "Failed to write checkpoint! Continuing without...")
     });

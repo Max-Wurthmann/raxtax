@@ -16,7 +16,12 @@ use std::{
 use crate::{tree::Tree, utils::KMerEncodingData};
 
 pub type LineageBinPair = (String, Option<String>);
-pub type LabeledSequence = (String, Vec<u8>);
+/// A sequence record: its label and its 4-bit-encoded sequence.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LabeledSequence {
+    pub label: String,
+    pub sequence: Vec<u8>,
+}
 
 fn map_dna_char(ch: char) -> u8 {
     let a: u8 = 0b0001;
@@ -84,7 +89,7 @@ fn parse_reference_labels(
 
         let mut labels: Vec<LineageBinPair> = Vec::new();
         for record in records {
-            let (label, _) = record?;
+            let label = record?.label;
             let caps = regex.captures(&label).context(format!(
                 "Unexpected taxonomical annotation detected in label {label}"
             ))?;
@@ -168,7 +173,7 @@ impl Iterator for FastaSequenceReader {
             }
             sequence.extend(trimmed.chars().map(|c| -> u8 { map_dna_char(c) }));
         }
-        Some(Ok((label, sequence)))
+        Some(Ok(LabeledSequence { label, sequence }))
     }
 }
 
@@ -246,7 +251,10 @@ impl Iterator for FastqSequenceReader {
             .map(|c| -> u8 { map_dna_char(c) })
             .collect();
 
-        Some(Ok((label.to_string(), sequence)))
+        Some(Ok(LabeledSequence {
+            label: label.to_string(),
+            sequence,
+        }))
     }
 }
 
@@ -327,9 +335,9 @@ impl<'a> Iterator for BatchedSequenceReader<'a> {
         let mut batch = Vec::with_capacity(self.batch_size);
         while batch.len() < self.batch_size {
             match self.inner.next() {
-                Some(Ok((label, sequence))) => {
-                    if !self.seq_to_skip.contains(&label) {
-                        batch.push((label, sequence));
+                Some(Ok(record)) => {
+                    if !self.seq_to_skip.contains(&record.label) {
+                        batch.push(record);
                     }
                 }
                 Some(Err(e)) => return Some(Err(e)),
@@ -551,7 +559,7 @@ AAACCCTTTGGGA";
             10,
         );
         let batch = reader.next().unwrap().unwrap();
-        let (_, sequence) = &batch[0];
+        let sequence = &batch[0].sequence;
         assert_eq!(sequence, &[1, 1, 1, 2, 2, 2, 8, 8, 8, 4, 4, 4, 1]);
 
         let fasta_str2 = r">label1
@@ -562,7 +570,7 @@ ACGTWSMKRYBDHVN";
             10,
         );
         let batch2 = reader2.next().unwrap().unwrap();
-        let (_, sequence) = &batch2[0];
+        let sequence = &batch2[0].sequence;
         assert_eq!(
             sequence,
             &[1, 2, 4, 8, 9, 6, 3, 12, 5, 10, 14, 13, 11, 7, 15]
@@ -582,13 +590,13 @@ ACGTWSMKRYBDHVN";
 
         let batch1 = reader.next().unwrap().unwrap();
         assert_eq!(
-            batch1.iter().map(|(l, _)| l.clone()).collect_vec(),
+            batch1.iter().map(|r| r.label.clone()).collect_vec(),
             vec!["q1".to_string(), "q3".to_string()]
         );
 
         let batch2 = reader.next().unwrap().unwrap();
         assert_eq!(
-            batch2.iter().map(|(l, _)| l.clone()).collect_vec(),
+            batch2.iter().map(|r| r.label.clone()).collect_vec(),
             vec!["q4".to_string()]
         );
 
@@ -600,10 +608,16 @@ ACGTWSMKRYBDHVN";
     fn test_fasta_sequence_reader_iterates_records() {
         let fasta_str = ">q1\nAAAA\n>q2\nCCCC\n";
         let mut reader = FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)));
-        let (label1, seq1) = reader.next().unwrap().unwrap();
+        let LabeledSequence {
+            label: label1,
+            sequence: seq1,
+        } = reader.next().unwrap().unwrap();
         assert_eq!(label1, "q1");
         assert_eq!(seq1, &[1, 1, 1, 1]);
-        let (label2, seq2) = reader.next().unwrap().unwrap();
+        let LabeledSequence {
+            label: label2,
+            sequence: seq2,
+        } = reader.next().unwrap().unwrap();
         assert_eq!(label2, "q2");
         assert_eq!(seq2, &[2, 2, 2, 2]);
         assert!(reader.next().is_none());
@@ -613,10 +627,16 @@ ACGTWSMKRYBDHVN";
     fn test_fastq_sequence_reader_iterates_records() {
         let fastq_str = "@q1\nAAAA\n+\nIIII\n@q2\nCCCC\n+q2\nIIII\n";
         let mut reader = FastqSequenceReader::new(Box::new(Cursor::new(fastq_str)));
-        let (label1, seq1) = reader.next().unwrap().unwrap();
+        let LabeledSequence {
+            label: label1,
+            sequence: seq1,
+        } = reader.next().unwrap().unwrap();
         assert_eq!(label1, "q1");
         assert_eq!(seq1, &[1, 1, 1, 1]);
-        let (label2, seq2) = reader.next().unwrap().unwrap();
+        let LabeledSequence {
+            label: label2,
+            sequence: seq2,
+        } = reader.next().unwrap().unwrap();
         assert_eq!(label2, "q2");
         assert_eq!(seq2, &[2, 2, 2, 2]);
         assert!(reader.next().is_none());
@@ -633,7 +653,7 @@ ACGTWSMKRYBDHVN";
         );
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(
-            batch.iter().map(|(l, _)| l.clone()).collect_vec(),
+            batch.iter().map(|r| r.label.clone()).collect_vec(),
             vec!["q1".to_string(), "q2".to_string()]
         );
         assert!(reader.next().is_none());
@@ -748,7 +768,13 @@ AAACCCCGG";
         let skip = HashSet::new();
         let mut reader = BatchedSequenceReader::from_file(&fasta_path, &skip, 10).unwrap();
         let batch = reader.next().unwrap().unwrap();
-        assert_eq!(batch, vec![("q1".to_string(), vec![1, 1, 1, 1])]);
+        assert_eq!(
+            batch,
+            vec![LabeledSequence {
+                label: "q1".to_string(),
+                sequence: vec![1, 1, 1, 1]
+            }]
+        );
         std::fs::remove_file(&fasta_path).unwrap();
 
         let fastq_gz_path = dir.join("raxtax_test_from_file.fastq.gz");
@@ -758,7 +784,13 @@ AAACCCCGG";
         encoder.finish().unwrap();
         let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, &skip, 10).unwrap();
         let batch = reader.next().unwrap().unwrap();
-        assert_eq!(batch, vec![("q1".to_string(), vec![2, 2, 2, 2])]);
+        assert_eq!(
+            batch,
+            vec![LabeledSequence {
+                label: "q1".to_string(),
+                sequence: vec![2, 2, 2, 2]
+            }]
+        );
         std::fs::remove_file(&fastq_gz_path).unwrap();
     }
 

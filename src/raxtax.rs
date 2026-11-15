@@ -82,8 +82,8 @@ where
         let chunk_size = batch.len().div_ceil(n_chunks);
         let query_kmers: Vec<Vec<u32>> = batch
             .par_iter()
-            .map(|(_, query_sequence)| {
-                utils::seq_to_unique_minenc_canon_kmers(query_sequence, &tree.encoding_data)
+            .map(|query| {
+                utils::seq_to_unique_minenc_canon_kmers(&query.sequence, &tree.encoding_data)
             })
             .collect();
         // zero the buffer in parallel instead of serially on this thread, a fresh allocation
@@ -129,7 +129,7 @@ where
             .zip(query_kmers.par_chunks(chunk_size))
             .zip(intersections.par_chunks(chunk_size * num_tips))
             .try_for_each(|((queries, k_mers), intersections)| -> Result<()> {
-                for (((query_label, query_sequence), k_mers), intersect_buffer) in queries
+                for ((query, k_mers), intersect_buffer) in queries
                     .iter()
                     .zip(k_mers)
                     .zip(intersections.chunks(num_tips))
@@ -140,7 +140,7 @@ where
                         intersect_buffer,
                     );
                     let (eval_res, bin_res) = lineage::Lineage::new(
-                        query_label,
+                        &query.label,
                         tree,
                         highest_hit_probs,
                         settings.binning,
@@ -151,7 +151,7 @@ where
                     let tsv_results = if settings.tsv {
                         Some(utils::get_results_tsv(
                             &eval_res,
-                            utils::decompress_sequence(query_sequence),
+                            utils::decompress_sequence(&query.sequence),
                         ))
                     } else {
                         None
@@ -162,7 +162,7 @@ where
                         None
                     };
                     sender.send(ResultsToPrint::new(
-                        query_label.clone(),
+                        query.label.clone(),
                         primary_results,
                         tsv_results,
                         binning_result,
@@ -274,13 +274,13 @@ mod tests {
         };
         let query_kmers = read(query_str)
             .iter()
-            .map(|(_, sequence)| kmers(sequence))
+            .map(|query| kmers(&query.sequence))
             .collect_vec();
 
         // brute force: intersect the k-mer sets directly, placing each reference at its sorted index
         let mut expected = vec![0_u32; query_kmers.len() * num_tips];
-        for (file_idx, (_, sequence)) in read(reference_str).iter().enumerate() {
-            let reference_kmers: HashSet<u32> = kmers(sequence).into_iter().collect();
+        for (file_idx, reference) in read(reference_str).iter().enumerate() {
+            let reference_kmers: HashSet<u32> = kmers(&reference.sequence).into_iter().collect();
             for (query_idx, q) in query_kmers.iter().enumerate() {
                 expected[query_idx * num_tips + tree.sorted_idx[file_idx] as usize] =
                     q.iter().filter(|k| reference_kmers.contains(k)).count() as u32;

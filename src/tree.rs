@@ -197,7 +197,7 @@ impl KMerMap {
         // slot to the right (offsets[k + 1] holds the count for k-mer k)
         // the unique k-mers are recomputed per sequence instead of being kept for all
         // sequences at once, as that would need to coexist in memory with the k-mer map
-        for (_, sequence) in sequences {
+        for LabeledSequence { sequence, .. } in sequences {
             for k_mer in seq_to_unique_minenc_canon_kmers(sequence, encoding_data) {
                 offsets[k_mer as usize + 1] += 1;
             }
@@ -221,7 +221,7 @@ impl KMerMap {
         order.sort_unstable_by_key(|&i| sorted_idx[i]);
         for i in order {
             let idx = sorted_idx[i];
-            for k_mer in seq_to_unique_minenc_canon_kmers(&sequences[i].1, encoding_data) {
+            for k_mer in seq_to_unique_minenc_canon_kmers(&sequences[i].sequence, encoding_data) {
                 let pos = &mut offsets[k_mer as usize];
                 self.data[*pos] = idx;
                 *pos += 1;

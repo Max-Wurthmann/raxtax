@@ -76,7 +76,7 @@ fn bench_seq_to_unique_minenc_canon_kmers(c: &mut Criterion) {
         .next()
         .unwrap()
         .unwrap()
-        .1;
+        .sequence;
 
     println!(
         "Using first sequence from {} ({} bases) at k={k}",
