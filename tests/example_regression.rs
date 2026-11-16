@@ -163,10 +163,12 @@ fn example_regression() {
     let (lineage_only, _) = sorted_diff(&actual, &expected, false);
 
     // regular println! does not print on successful test runs
-    let _ = writeln!(
-        std::io::stdout(),
-        "{} out of {} lines differ in assigned lineage but are identical confidence values, this can safely be ignored as tie-breaking is non-deterministic",
-        lineage_only.len(),
-        actual.len()
-    );
+    if !lineage_only.is_empty() {
+        let _ = writeln!(
+            std::io::stdout(),
+            "{} out of {} lines differ in assigned lineage but have identical confidence value, this can safely be ignored as tie-breaking is non-deterministic",
+            lineage_only.len(),
+            actual.len()
+        );
+    }
 }
