@@ -1,4 +1,3 @@
-use ahash::HashSet;
 use anyhow::{ensure, Result};
 use std::{path::Path, time::Duration};
 
@@ -186,9 +185,8 @@ fn for_each_reference_batch(
     kmer_map: &mut KMerMap,
     mut f: impl FnMut(&KMerMap),
 ) -> Result<()> {
-    let no_skip = HashSet::default();
     let mut n_references = 0;
-    for batch in BatchedSequenceReader::from_file(reference_path, &no_skip, batch_size)? {
+    for batch in BatchedSequenceReader::from_file(reference_path, batch_size, None)? {
         let batch = batch?;
         ensure!(
             n_references + batch.len() <= tree.num_tips,

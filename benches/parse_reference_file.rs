@@ -1,4 +1,3 @@
-use ahash::HashSet;
 use criterion::{criterion_group, criterion_main, Criterion};
 use raxtax::parser::{count_sequences_in_file, parse_reference_taxonomy, BatchedSequenceReader};
 use raxtax::tree::{KMerMap, Tree};
@@ -9,7 +8,7 @@ use std::path::{Path, PathBuf};
 fn parse_reference_file(path: &Path, k: u32, n_references: usize) -> (Tree, KMerMap) {
     let tree =
         parse_reference_taxonomy(path, KMerEncodingData::new(k).unwrap(), n_references).unwrap();
-    let references = BatchedSequenceReader::from_file(path, &HashSet::default(), tree.num_tips)
+    let references = BatchedSequenceReader::from_file(path, tree.num_tips, None)
         .unwrap()
         .next()
         .unwrap()

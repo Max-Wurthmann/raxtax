@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{info, log_enabled, Level};
-use logging_timer::time;
+use logging_timer::{time, timer};
 use rayon::prelude::*;
 use regex::Regex;
 use std::time::Duration;
@@ -298,8 +298,8 @@ impl Iterator for SequenceReader {
 /// batches, skipping any sequences whose labels are in `seq_to_skip`.
 pub struct BatchedSequenceReader<'a> {
     inner: SequenceReader,
-    seq_to_skip: &'a HashSet<String>,
     batch_size: usize,
+    seq_to_skip: Option<&'a HashSet<String>>,
 }
 
 impl<'a> BatchedSequenceReader<'a> {
@@ -310,18 +310,22 @@ impl<'a> BatchedSequenceReader<'a> {
     /// `seq_to_skip`.
     pub fn from_file(
         path: &Path,
-        seq_to_skip: &'a HashSet<String>,
         batch_size: usize,
+        seq_to_skip: Option<&'a HashSet<String>>,
     ) -> Result<Self> {
         let inner = SequenceReader::from_file(path)?;
-        Ok(BatchedSequenceReader::new(inner, seq_to_skip, batch_size))
+        Ok(BatchedSequenceReader::new(inner, batch_size, seq_to_skip))
     }
 
-    pub fn new(inner: SequenceReader, seq_to_skip: &'a HashSet<String>, batch_size: usize) -> Self {
+    pub fn new(
+        inner: SequenceReader,
+        batch_size: usize,
+        seq_to_skip: Option<&'a HashSet<String>>,
+    ) -> Self {
         BatchedSequenceReader {
             inner,
-            seq_to_skip,
             batch_size,
+            seq_to_skip,
         }
     }
 }
@@ -336,7 +340,10 @@ impl<'a> Iterator for BatchedSequenceReader<'a> {
         while batch.len() < self.batch_size {
             match self.inner.next() {
                 Some(Ok(record)) => {
-                    if !self.seq_to_skip.contains(&record.label) {
+                    let skip = self
+                        .seq_to_skip
+                        .is_some_and(|skip| skip.contains(&record.label));
+                    if !skip {
                         batch.push(record);
                     }
                 }
@@ -425,6 +432,8 @@ fn count_chars_in_file<R: BufRead>(mut reader: R, target: u8) -> Result<usize> {
 /// Transparently handles `.gz`/`.gzip` compression. Plain (uncompressed) files are scanned in
 /// parallel across the rayon thread pool while gzipped files are scanned sequentially.
 pub fn count_sequences_in_file(path: &Path) -> Result<usize> {
+    let _tmr = timer!(Level::Debug; "counting sequences", "in {}", path.display());
+
     let (format, gzipped) = classify_file(path);
     let (target, divisor) = match format {
         FileFormat::Fasta => (b'>', 1),
@@ -555,8 +564,8 @@ ATACGCTTTGCGT";
 AAACCCTTTGGGA";
         let mut reader = BatchedSequenceReader::new(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
-            &skip,
             10,
+            Some(&skip),
         );
         let batch = reader.next().unwrap().unwrap();
         let sequence = &batch[0].sequence;
@@ -566,8 +575,8 @@ AAACCCTTTGGGA";
 ACGTWSMKRYBDHVN";
         let mut reader2 = BatchedSequenceReader::new(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str2)))),
-            &skip,
             10,
+            Some(&skip),
         );
         let batch2 = reader2.next().unwrap().unwrap();
         let sequence = &batch2[0].sequence;
@@ -584,8 +593,8 @@ ACGTWSMKRYBDHVN";
         skip.insert("q2".to_string());
         let mut reader = BatchedSequenceReader::new(
             SequenceReader::Fasta(FastaSequenceReader::new(Box::new(Cursor::new(fasta_str)))),
-            &skip,
             2,
+            Some(&skip),
         );
 
         let batch1 = reader.next().unwrap().unwrap();
@@ -648,8 +657,8 @@ ACGTWSMKRYBDHVN";
         let skip = HashSet::new();
         let mut reader = BatchedSequenceReader::new(
             SequenceReader::Fastq(FastqSequenceReader::new(Box::new(Cursor::new(fastq_str)))),
-            &skip,
             10,
+            Some(&skip),
         );
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(
@@ -766,7 +775,7 @@ AAACCCCGG";
         let fasta_path = dir.join("raxtax_test_from_file.fasta");
         std::fs::write(&fasta_path, ">q1\nAAAA\n").unwrap();
         let skip = HashSet::new();
-        let mut reader = BatchedSequenceReader::from_file(&fasta_path, &skip, 10).unwrap();
+        let mut reader = BatchedSequenceReader::from_file(&fasta_path, 10, Some(&skip)).unwrap();
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(
             batch,
@@ -782,7 +791,7 @@ AAACCCCGG";
         let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         encoder.write_all(b"@q1\nCCCC\n+\nIIII\n").unwrap();
         encoder.finish().unwrap();
-        let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, &skip, 10).unwrap();
+        let mut reader = BatchedSequenceReader::from_file(&fastq_gz_path, 10, Some(&skip)).unwrap();
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(
             batch,

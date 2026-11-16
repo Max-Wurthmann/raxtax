@@ -98,12 +98,12 @@ fn main() {
     });
     let n_queries_remaining = n_queries.saturating_sub(checkpoint.processed_queries.len());
 
-    let batch_size = if args.query_batch_size == 0 {
+    let query_batch_size = if args.query_batch_size == 0 {
         n_queries_remaining
     } else {
         args.query_batch_size.min(n_queries_remaining)
     }
-    .max(1);
+    .max(args.threads);
 
     let (sender, receiver) = crossbeam::channel::unbounded::<ResultsToPrint>();
     let writer_handle = std::thread::spawn(move || -> Result<()> {
@@ -126,12 +126,15 @@ fn main() {
         Ok(())
     });
 
-    let query_reader =
-        BatchedSequenceReader::from_file(query_file, &checkpoint.processed_queries, batch_size)
-            .unwrap_or_else(|e| {
-                utils::report_error(e, format!("Failed to open {}", query_file.display()));
-                exit(exitcode::NOINPUT);
-            });
+    let query_reader = BatchedSequenceReader::from_file(
+        query_file,
+        query_batch_size,
+        Some(&checkpoint.processed_queries),
+    )
+    .unwrap_or_else(|e| {
+        utils::report_error(e, format!("Failed to open {}", query_file.display()));
+        exit(exitcode::NOINPUT);
+    });
 
     if let Err(e) = raxtax(
         query_reader,
