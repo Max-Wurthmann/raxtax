@@ -49,12 +49,12 @@ pub fn raxtax<I>(
 where
     I: Iterator<Item = Result<Vec<LabeledSequence>>>,
 {
-    let num_tips = tree.num_tips;
+    let n_references = tree.num_tips;
     let mut kmer_map = KMerMap::new(&tree.encoding_data);
-    let single_reference_batch = reference_batch_size == 0 || reference_batch_size >= num_tips;
-    if single_reference_batch {
+    let is_single_ref_batch = reference_batch_size == 0 || reference_batch_size >= n_references;
+    if is_single_ref_batch {
         let _tmr = timer!(Level::Info; "Creating k-mer map");
-        for_each_reference_batch(reference_path, num_tips, tree, &mut kmer_map, |_| {})?;
+        for_each_reference_batch(reference_path, n_references, tree, &mut kmer_map, |_| {})?;
     }
 
     let pb = if cfg!(test) {
@@ -73,6 +73,7 @@ where
     pb.enable_steady_tick(Duration::from_millis(100));
 
     let n_chunks = 10 * rayon::current_num_threads();
+
     // intersection sizes of every query in the batch with every reference sequence,
     // query i owns intersections[i * num_tips..(i + 1) * num_tips]
     let mut intersections: Vec<u32> = Vec::new();
@@ -85,23 +86,24 @@ where
                 utils::seq_to_unique_minenc_canon_kmers(&query.sequence, &tree.encoding_data)
             })
             .collect();
+
         // zero the buffer in parallel instead of serially on this thread, a fresh allocation
         // (only for the first and the last, smaller batch) is zeroed lazily by the OS
-        if intersections.len() == batch.len() * num_tips {
+        if intersections.len() == batch.len() * n_references {
             intersections
-                .par_chunks_mut(chunk_size * num_tips)
+                .par_chunks_mut(chunk_size * n_references)
                 .for_each(|chunk| chunk.fill(0));
         } else {
-            intersections = vec![0; batch.len() * num_tips];
+            intersections = vec![0; batch.len() * n_references];
         }
 
         let tmr = timer!(Level::Debug; "K-mer Intersections");
-        if single_reference_batch {
+        if is_single_ref_batch {
             accumulate_intersections(
                 &kmer_map,
                 &query_kmers,
                 &mut intersections,
-                num_tips,
+                n_references,
                 chunk_size,
             );
         } else {
@@ -115,7 +117,7 @@ where
                         kmer_map,
                         &query_kmers,
                         &mut intersections,
-                        num_tips,
+                        n_references,
                         chunk_size,
                     )
                 },
@@ -126,12 +128,12 @@ where
         batch
             .par_chunks(chunk_size)
             .zip(query_kmers.par_chunks(chunk_size))
-            .zip(intersections.par_chunks(chunk_size * num_tips))
+            .zip(intersections.par_chunks(chunk_size * n_references))
             .try_for_each(|((queries, k_mers), intersections)| -> Result<()> {
                 for ((query, k_mers), intersect_buffer) in queries
                     .iter()
                     .zip(k_mers)
-                    .zip(intersections.chunks(num_tips))
+                    .zip(intersections.chunks(n_references))
                 {
                     let highest_hit_probs = prob::highest_hit_prob_per_reference(
                         k_mers.len() as u32,
