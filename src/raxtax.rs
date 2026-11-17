@@ -52,7 +52,10 @@ where
     let n_references = tree.num_tips;
     let mut kmer_map = KMerMap::new(&tree.encoding_data);
     let is_single_ref_batch = reference_batch_size == 0 || reference_batch_size >= n_references;
+
     if is_single_ref_batch {
+        // compute the one and only k-mer map
+        // if !is_single_ref_batch: one k-mer map per reference batch needs to be computed
         let _tmr = timer!(Level::Info; "Creating k-mer map");
         for_each_reference_batch(reference_path, n_references, tree, &mut kmer_map, |_| {})?;
     }
@@ -77,18 +80,28 @@ where
     // intersection sizes of every query in the batch with every reference sequence,
     // query i owns intersections[i * num_tips..(i + 1) * num_tips]
     let mut intersections: Vec<u32> = Vec::new();
+
+    // unique k-mers of every query in the batch, the inner buffers are reused across batches
+    let mut query_kmers: Vec<Vec<u32>> = Vec::new();
     for batch in query_batches {
         let batch = batch?;
         let chunk_size = batch.len().div_ceil(n_chunks);
-        let query_kmers: Vec<Vec<u32>> = batch
-            .par_iter()
-            .map(|query| {
-                utils::seq_to_unique_minenc_canon_kmers(&query.sequence, &tree.encoding_data)
-            })
-            .collect();
 
-        // zero the buffer in parallel instead of serially on this thread, a fresh allocation
-        // (only for the first and the last, smaller batch) is zeroed lazily by the OS
+        // process query batch into kmers (in parallel)
+        query_kmers.resize_with(batch.len(), Vec::new);
+        query_kmers
+            .par_iter_mut()
+            .zip(batch.par_iter())
+            .for_each(|(kmers, query)| {
+                utils::seq_to_unique_minenc_canon_kmers_into(
+                    &query.sequence,
+                    &tree.encoding_data,
+                    kmers,
+                )
+            });
+
+        // zero the intersection buffer in parallel
+        // only for the first and the last (smaller batch) is zeroed lazily by the OS
         if intersections.len() == batch.len() * n_references {
             intersections
                 .par_chunks_mut(chunk_size * n_references)
@@ -97,6 +110,9 @@ where
             intersections = vec![0; batch.len() * n_references];
         }
 
+        // compute k-mer intersections of the queries in current query batch
+        // with all references
+        // requires a pass over the whole reference database
         let tmr = timer!(Level::Debug; "K-mer Intersections");
         if is_single_ref_batch {
             accumulate_intersections(
@@ -107,6 +123,7 @@ where
                 chunk_size,
             );
         } else {
+            // do pass over reverence database in a batched manner
             for_each_reference_batch(
                 reference_path,
                 reference_batch_size,
@@ -125,6 +142,9 @@ where
         }
         drop(tmr);
 
+        // turn intersection sizes for current query batch into confidence and signal values
+        // send to output writer thread to write to result file
+        let tmr = timer!(Level::Debug; "Hit-prob and result computation");
         batch
             .par_chunks(chunk_size)
             .zip(query_kmers.par_chunks(chunk_size))
@@ -172,6 +192,7 @@ where
                 }
                 Ok(())
             })?;
+        drop(tmr)
     }
 
     pb.finish();

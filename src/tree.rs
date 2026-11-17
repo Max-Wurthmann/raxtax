@@ -7,7 +7,7 @@ use logging_timer::time;
 
 use crate::{
     parser::{LabeledSequence, LineageBinPair},
-    utils::{seq_to_unique_minenc_canon_kmers, KMerEncodingData},
+    utils::{seq_to_unique_minenc_canon_kmers_into, KMerEncodingData},
 };
 
 #[cfg(feature = "huge_db")]
@@ -197,8 +197,11 @@ impl KMerMap {
         // slot to the right (offsets[k + 1] holds the count for k-mer k)
         // the unique k-mers are recomputed per sequence instead of being kept for all
         // sequences at once, as that would need to coexist in memory with the k-mer map
+        // one k-mer buffer is reused for all sequences of both passes
+        let mut kmers = Vec::new();
         for LabeledSequence { sequence, .. } in sequences {
-            for k_mer in seq_to_unique_minenc_canon_kmers(sequence, encoding_data) {
+            seq_to_unique_minenc_canon_kmers_into(sequence, encoding_data, &mut kmers);
+            for &k_mer in &kmers {
                 offsets[k_mer as usize + 1] += 1;
             }
         }
@@ -221,7 +224,12 @@ impl KMerMap {
         order.sort_unstable_by_key(|&i| sorted_idx[i]);
         for i in order {
             let idx = sorted_idx[i];
-            for k_mer in seq_to_unique_minenc_canon_kmers(&sequences[i].sequence, encoding_data) {
+            seq_to_unique_minenc_canon_kmers_into(
+                &sequences[i].sequence,
+                encoding_data,
+                &mut kmers,
+            );
+            for &k_mer in &kmers {
                 let pos = &mut offsets[k_mer as usize];
                 self.data[*pos] = idx;
                 *pos += 1;
