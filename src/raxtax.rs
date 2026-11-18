@@ -83,15 +83,15 @@ where
 
     // unique k-mers of every query in the batch, the inner buffers are reused across batches
     let mut query_kmers: Vec<Vec<u32>> = Vec::new();
-    for batch in query_batches {
-        let batch = batch?;
-        let chunk_size = batch.len().div_ceil(n_chunks);
+    for query_batch in query_batches {
+        let query_batch = query_batch?;
+        let chunk_size = query_batch.len().div_ceil(n_chunks);
 
         // process query batch into kmers (in parallel)
-        query_kmers.resize_with(batch.len(), Vec::new);
+        query_kmers.resize_with(query_batch.len(), Vec::new);
         query_kmers
             .par_iter_mut()
-            .zip(batch.par_iter())
+            .zip(query_batch.par_iter())
             .for_each(|(kmers, query)| {
                 utils::seq_to_unique_minenc_canon_kmers_into(
                     &query.sequence,
@@ -102,12 +102,12 @@ where
 
         // zero the intersection buffer in parallel
         // only for the first and the last (smaller batch) is zeroed lazily by the OS
-        if intersections.len() == batch.len() * n_references {
+        if intersections.len() == query_batch.len() * n_references {
             intersections
                 .par_chunks_mut(chunk_size * n_references)
                 .for_each(|chunk| chunk.fill(0));
         } else {
-            intersections = vec![0; batch.len() * n_references];
+            intersections = vec![0; query_batch.len() * n_references];
         }
 
         // compute k-mer intersections of the queries in current query batch
@@ -145,7 +145,7 @@ where
         // turn intersection sizes for current query batch into confidence and signal values
         // send to output writer thread to write to result file
         let tmr = timer!(Level::Debug; "Hit-prob and result computation");
-        batch
+        query_batch
             .par_chunks(chunk_size)
             .zip(query_kmers.par_chunks(chunk_size))
             .zip(intersections.par_chunks(chunk_size * n_references))
@@ -209,15 +209,16 @@ fn for_each_reference_batch(
     mut f: impl FnMut(&KMerMap),
 ) -> Result<()> {
     let mut n_references = 0;
-    for batch in BatchedSequenceReader::from_file(reference_path, batch_size, None)? {
-        let batch = batch?;
+    for ref_batch in BatchedSequenceReader::from_file(reference_path, batch_size, None)? {
+        let ref_batch = ref_batch?;
         ensure!(
-            n_references + batch.len() <= tree.num_tips,
+            n_references + ref_batch.len() <= tree.num_tips,
             "{} contains more sequences than when it was first parsed. Was it modified during the run?",
             reference_path.display()
         );
-        kmer_map.rebuild(&batch, n_references, tree);
-        n_references += batch.len();
+        kmer_map.rebuild(&ref_batch, n_references, tree);
+        n_references += ref_batch.len();
+
         f(kmer_map);
     }
     ensure!(
