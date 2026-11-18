@@ -52,7 +52,7 @@ fn map_dna_char(ch: char) -> u8 {
 /// The sequences themselves are discarded here; they are streamed in batches during
 /// classification (see [`crate::raxtax::raxtax`]). Returns an error if there are issues
 /// reading the file.
-#[time("info", "Parsing Reference Taxonomy")]
+#[time("info", "Parsing Reference Lineage Tree")]
 pub fn parse_reference_taxonomy(
     sequence_path: &Path,
     encoding_data: KMerEncodingData,
@@ -83,7 +83,7 @@ fn parse_reference_labels(
                     .unwrap()
                     .progress_chars("##-"),
                 )
-                .with_message("Parsing Reference...")
+                .with_message("Parsing Reference Lineage Tree...")
         };
         pb.enable_steady_tick(Duration::from_millis(100));
 
@@ -102,7 +102,7 @@ fn parse_reference_labels(
             labels.push((lineage, bin));
             pb.inc(1);
         }
-        pb.finish();
+        pb.finish_and_clear();
         labels
     };
     if labels.is_empty() {
