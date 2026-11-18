@@ -55,9 +55,20 @@ where
 
     if is_single_ref_batch {
         // compute the one and only k-mer map
-        // if !is_single_ref_batch: one k-mer map per reference batch needs to be computed
         let _tmr = timer!(Level::Info; "Creating k-mer map");
-        for_each_reference_batch(reference_path, n_references, tree, &mut kmer_map, |_| {})?;
+        let mut reader = BatchedSequenceReader::from_file(reference_path, n_references, None)?;
+        let ref_batch = reader.next().transpose()?.unwrap_or_default();
+        ensure!(
+            ref_batch.len() == n_references,
+            "{} contains fewer sequences than when it was first parsed. Was it modified during the run?",
+            reference_path.display()
+        );
+        kmer_map.rebuild(&ref_batch, 0, tree);
+        ensure!(
+            reader.next().is_none(),
+            "{} contains more sequences than when it was first parsed. Was it modified during the run?",
+            reference_path.display()
+        );
     }
 
     let pb = if cfg!(test) {
@@ -115,6 +126,7 @@ where
         // requires a pass over the whole reference database
         let tmr = timer!(Level::Debug; "K-mer Intersections");
         if is_single_ref_batch {
+            // use single precomputed k-mer map to compute intersection of queries in query_batch with all references
             accumulate_intersections(
                 &kmer_map,
                 &query_kmers,
@@ -123,21 +135,16 @@ where
                 chunk_size,
             );
         } else {
-            // do pass over reverence database in a batched manner
+            // do batched pass over reverence database and compute intersections of queries in query_batch
+            // with all references
             for_each_reference_batch(
                 reference_path,
                 reference_batch_size,
                 tree,
                 &mut kmer_map,
-                |kmer_map| {
-                    accumulate_intersections(
-                        kmer_map,
-                        &query_kmers,
-                        &mut intersections,
-                        n_references,
-                        chunk_size,
-                    )
-                },
+                &query_kmers,
+                &mut intersections,
+                chunk_size,
             )?;
         }
         drop(tmr);
@@ -200,13 +207,16 @@ where
 }
 
 /// Streams the reference file in batches of `batch_size` sequences, rebuilds `kmer_map`
-/// for each batch and hands it to `f`.
+/// for each batch and accumulates the resulting k-mer intersections with `query_kmers`
+/// into `intersections`.
 fn for_each_reference_batch(
     reference_path: &Path,
     batch_size: usize,
     tree: &Tree,
     kmer_map: &mut KMerMap,
-    mut f: impl FnMut(&KMerMap),
+    query_kmers: &[Vec<u32>],
+    intersections: &mut [u32],
+    chunk_size: usize,
 ) -> Result<()> {
     let mut n_references = 0;
     for ref_batch in BatchedSequenceReader::from_file(reference_path, batch_size, None)? {
@@ -219,7 +229,13 @@ fn for_each_reference_batch(
         kmer_map.rebuild(&ref_batch, n_references, tree);
         n_references += ref_batch.len();
 
-        f(kmer_map);
+        accumulate_intersections(
+            kmer_map,
+            query_kmers,
+            intersections,
+            tree.num_tips,
+            chunk_size,
+        );
     }
     ensure!(
         n_references == tree.num_tips,
@@ -268,7 +284,7 @@ mod tests {
     use itertools::Itertools;
     use std::io::Cursor;
 
-    use super::{accumulate_intersections, for_each_reference_batch};
+    use super::for_each_reference_batch;
     use crate::parser::{parse_reference_taxonomy, FastaSequenceReader, LabeledSequence};
     use crate::tree::KMerMap;
     use crate::utils::{seq_to_unique_minenc_canon_kmers, KMerEncodingData};
@@ -313,15 +329,15 @@ mod tests {
         for (batch_size, chunk_size) in [(5, 3), (1, 1), (2, 2), (3, 1), (4, 3)] {
             let mut kmer_map = KMerMap::new(&tree.encoding_data);
             let mut intersections = vec![0_u32; query_kmers.len() * num_tips];
-            for_each_reference_batch(&path, batch_size, &tree, &mut kmer_map, |kmer_map| {
-                accumulate_intersections(
-                    kmer_map,
-                    &query_kmers,
-                    &mut intersections,
-                    num_tips,
-                    chunk_size,
-                )
-            })
+            for_each_reference_batch(
+                &path,
+                batch_size,
+                &tree,
+                &mut kmer_map,
+                &query_kmers,
+                &mut intersections,
+                chunk_size,
+            )
             .unwrap();
             assert_eq!(intersections, expected, "reference batch size {batch_size}");
         }
