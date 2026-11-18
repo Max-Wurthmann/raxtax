@@ -1,8 +1,8 @@
 use anyhow::{ensure, Result};
 use std::{path::Path, time::Duration};
 
-use indicatif::{ProgressBar, ProgressStyle};
-use log::Level;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use log::{debug, Level};
 use logging_timer::{time, timer};
 use rayon::prelude::*;
 
@@ -71,6 +71,7 @@ where
         );
     }
 
+    let multi_pb = MultiProgress::new();
     let pb = if cfg!(test) {
         ProgressBar::hidden()
     } else {
@@ -84,9 +85,8 @@ where
             )
             .with_message("Running Queries...")
     };
+    let pb = multi_pb.add(pb);
     pb.enable_steady_tick(Duration::from_millis(100));
-
-    let n_chunks = 10 * rayon::current_num_threads();
 
     // intersection sizes of every query in the batch with every reference sequence,
     // query i owns intersections[i * num_tips..(i + 1) * num_tips]
@@ -94,9 +94,8 @@ where
 
     // unique k-mers of every query in the batch, the inner buffers are reused across batches
     let mut query_kmers: Vec<Vec<u32>> = Vec::new();
-    for query_batch in query_batches {
+    for (batch_idx, query_batch) in query_batches.enumerate() {
         let query_batch = query_batch?;
-        let chunk_size = query_batch.len().div_ceil(n_chunks);
 
         // process query batch into kmers (in parallel)
         query_kmers.resize_with(query_batch.len(), Vec::new);
@@ -114,9 +113,7 @@ where
         // zero the intersection buffer in parallel
         // only for the first and the last (smaller batch) is zeroed lazily by the OS
         if intersections.len() == query_batch.len() * n_references {
-            intersections
-                .par_chunks_mut(chunk_size * n_references)
-                .for_each(|chunk| chunk.fill(0));
+            intersections.par_iter_mut().for_each(|v| *v = 0);
         } else {
             intersections = vec![0; query_batch.len() * n_references];
         }
@@ -127,16 +124,25 @@ where
         let tmr = timer!(Level::Debug; "K-mer Intersections");
         if is_single_ref_batch {
             // use single precomputed k-mer map to compute intersection of queries in query_batch with all references
-            accumulate_intersections(
-                &kmer_map,
-                &query_kmers,
-                &mut intersections,
-                n_references,
-                chunk_size,
-            );
+            accumulate_intersections(&kmer_map, &query_kmers, &mut intersections, n_references);
         } else {
             // do batched pass over reverence database and compute intersections of queries in query_batch
             // with all references
+            let ref_pb = if cfg!(test) {
+                ProgressBar::hidden()
+            } else {
+                ProgressBar::new(n_references as u64)
+                    .with_style(
+                        ProgressStyle::with_template(
+                            "[{elapsed_precise}] {bar:80.cyan/blue} {pos:>7}/{len:7}[ETA:{eta}] {msg}",
+                        )
+                        .unwrap()
+                        .progress_chars("##-"),
+                    )
+                    .with_message("Intersecting with references...")
+            };
+            let ref_pb = multi_pb.add(ref_pb);
+            ref_pb.enable_steady_tick(Duration::from_millis(100));
             for_each_reference_batch(
                 reference_path,
                 reference_batch_size,
@@ -144,8 +150,10 @@ where
                 &mut kmer_map,
                 &query_kmers,
                 &mut intersections,
-                chunk_size,
+                &ref_pb,
             )?;
+            ref_pb.finish_and_clear();
+            debug!("Finished intersecting query batch {batch_idx} with all references");
         }
         drop(tmr);
 
@@ -153,50 +161,40 @@ where
         // send to output writer thread to write to result file
         let tmr = timer!(Level::Debug; "Hit-prob and result computation");
         query_batch
-            .par_chunks(chunk_size)
-            .zip(query_kmers.par_chunks(chunk_size))
-            .zip(intersections.par_chunks(chunk_size * n_references))
-            .try_for_each(|((queries, k_mers), intersections)| -> Result<()> {
-                for ((query, k_mers), intersect_buffer) in queries
-                    .iter()
-                    .zip(k_mers)
-                    .zip(intersections.chunks(n_references))
-                {
-                    let highest_hit_probs = prob::highest_hit_prob_per_reference(
-                        k_mers.len() as u32,
-                        k_mers.len() / 2,
-                        intersect_buffer,
-                    );
-                    let (eval_res, bin_res) = lineage::Lineage::new(
-                        &query.label,
-                        tree,
-                        highest_hit_probs,
-                        settings.binning,
-                    )
-                    .evaluate();
-                    assert!(!eval_res.is_empty());
-                    let primary_results = utils::get_results(&eval_res);
-                    let tsv_results = if settings.tsv {
-                        Some(utils::get_results_tsv(
-                            &eval_res,
-                            utils::decompress_sequence(&query.sequence),
-                        ))
-                    } else {
-                        None
-                    };
-                    let binning_result = if settings.binning {
-                        Some(utils::get_results_binning(bin_res))
-                    } else {
-                        None
-                    };
-                    sender.send(ResultsToPrint::new(
-                        query.label.clone(),
-                        primary_results,
-                        tsv_results,
-                        binning_result,
-                    ))?;
-                    pb.inc(1);
-                }
+            .par_iter()
+            .zip(query_kmers.par_iter())
+            .zip(intersections.par_chunks(n_references))
+            .try_for_each(|((query, k_mers), intersect_buffer)| -> Result<()> {
+                let highest_hit_probs = prob::highest_hit_prob_per_reference(
+                    k_mers.len() as u32,
+                    k_mers.len() / 2,
+                    intersect_buffer,
+                );
+                let (eval_res, bin_res) =
+                    lineage::Lineage::new(&query.label, tree, highest_hit_probs, settings.binning)
+                        .evaluate();
+                assert!(!eval_res.is_empty());
+                let primary_results = utils::get_results(&eval_res);
+                let tsv_results = if settings.tsv {
+                    Some(utils::get_results_tsv(
+                        &eval_res,
+                        utils::decompress_sequence(&query.sequence),
+                    ))
+                } else {
+                    None
+                };
+                let binning_result = if settings.binning {
+                    Some(utils::get_results_binning(bin_res))
+                } else {
+                    None
+                };
+                sender.send(ResultsToPrint::new(
+                    query.label.clone(),
+                    primary_results,
+                    tsv_results,
+                    binning_result,
+                ))?;
+                pb.inc(1);
                 Ok(())
             })?;
         drop(tmr)
@@ -206,20 +204,21 @@ where
     Ok(())
 }
 
-/// Streams the reference file in batches of `batch_size` sequences, rebuilds `kmer_map`
+/// Streams the reference file in batches of `ref_batch_size` sequences, rebuilds `kmer_map`
 /// for each batch and accumulates the resulting k-mer intersections with `query_kmers`
-/// into `intersections`.
+/// into `intersections`. `ref_pb` is advanced by each batch's sequence count, tracking
+/// progress through the reference database for the current query batch.
 fn for_each_reference_batch(
     reference_path: &Path,
-    batch_size: usize,
+    ref_batch_size: usize,
     tree: &Tree,
     kmer_map: &mut KMerMap,
     query_kmers: &[Vec<u32>],
     intersections: &mut [u32],
-    chunk_size: usize,
+    ref_pb: &ProgressBar,
 ) -> Result<()> {
     let mut n_references = 0;
-    for ref_batch in BatchedSequenceReader::from_file(reference_path, batch_size, None)? {
+    for ref_batch in BatchedSequenceReader::from_file(reference_path, ref_batch_size, None)? {
         let ref_batch = ref_batch?;
         ensure!(
             n_references + ref_batch.len() <= tree.num_tips,
@@ -229,13 +228,9 @@ fn for_each_reference_batch(
         kmer_map.rebuild(&ref_batch, n_references, tree);
         n_references += ref_batch.len();
 
-        accumulate_intersections(
-            kmer_map,
-            query_kmers,
-            intersections,
-            tree.num_tips,
-            chunk_size,
-        );
+        accumulate_intersections(kmer_map, query_kmers, intersections, tree.num_tips);
+
+        ref_pb.inc(ref_batch.len() as u64);
     }
     ensure!(
         n_references == tree.num_tips,
@@ -246,34 +241,28 @@ fn for_each_reference_batch(
 }
 
 /// Adds the intersection sizes of every query with the reference sequences of `kmer_map` to
-/// `intersections` (query i owns `intersections[i * num_tips..(i + 1) * num_tips]`).
-/// The queries are processed in parallel in chunks of `chunk_size`.
+/// `intersections` (query i owns `intersections[i *  n_references..(i + 1) * n_references]`).
 fn accumulate_intersections(
     kmer_map: &KMerMap,
     query_kmers: &[Vec<u32>],
     intersections: &mut [u32],
-    num_tips: usize,
-    chunk_size: usize,
+    n_references: usize,
 ) {
     query_kmers
-        .par_chunks(chunk_size)
-        .zip(intersections.par_chunks_mut(chunk_size * num_tips))
-        .for_each(|(query_kmers, intersections)| {
-            for (k_mers, intersect_buffer) in
-                query_kmers.iter().zip(intersections.chunks_mut(num_tips))
-            {
-                for query_kmer in k_mers {
-                    kmer_map.kmer_row(*query_kmer as usize).iter().for_each(
-                        |sequence_id: &IndexType| {
-                            // cast is necessary, because sequence_id is u32 if not cfg(huge_db)
-                            // SAFETY: sequence ids are sorted indices into the tree, so < num_tips
-                            #[allow(clippy::unnecessary_cast)]
-                            unsafe {
-                                *intersect_buffer.get_unchecked_mut(*sequence_id as usize) += 1
-                            };
-                        },
-                    );
-                }
+        .par_iter()
+        .zip(intersections.par_chunks_mut(n_references))
+        .for_each(|(k_mers, intersect_buffer)| {
+            for query_kmer in k_mers {
+                kmer_map.kmer_row(*query_kmer as usize).iter().for_each(
+                    |sequence_id: &IndexType| {
+                        // cast is necessary, because sequence_id is u32 if not cfg(huge_db)
+                        // SAFETY: sequence ids are sorted indices into the tree, so < num_tips
+                        #[allow(clippy::unnecessary_cast)]
+                        unsafe {
+                            *intersect_buffer.get_unchecked_mut(*sequence_id as usize) += 1
+                        };
+                    },
+                );
             }
         });
 }
@@ -281,6 +270,7 @@ fn accumulate_intersections(
 #[cfg(test)]
 mod tests {
     use ahash::HashSet;
+    use indicatif::ProgressBar;
     use itertools::Itertools;
     use std::io::Cursor;
 
@@ -326,7 +316,7 @@ mod tests {
         }
         assert!(expected.iter().any(|&c| c > 0));
 
-        for (batch_size, chunk_size) in [(5, 3), (1, 1), (2, 2), (3, 1), (4, 3)] {
+        for batch_size in [5, 1, 2, 3, 4] {
             let mut kmer_map = KMerMap::new(&tree.encoding_data);
             let mut intersections = vec![0_u32; query_kmers.len() * num_tips];
             for_each_reference_batch(
@@ -336,7 +326,7 @@ mod tests {
                 &mut kmer_map,
                 &query_kmers,
                 &mut intersections,
-                chunk_size,
+                &ProgressBar::hidden(),
             )
             .unwrap();
             assert_eq!(intersections, expected, "reference batch size {batch_size}");
