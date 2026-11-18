@@ -171,6 +171,11 @@ impl Tree {
 pub struct KMerMap {
     pub offsets: Vec<usize>,
     pub data: Vec<IndexType>,
+
+    /// Scratch buffer for the unique k-mers of the sequence currently being processed by
+    /// `rebuild`. Kept as a field (rather than a local) so its capacity is reused across
+    /// `rebuild` calls instead of being regrown from empty.
+    kmers: Vec<u32>,
 }
 
 impl KMerMap {
@@ -178,6 +183,7 @@ impl KMerMap {
         Self {
             offsets: vec![0_usize; encoding_data.n_unique_codes as usize + 1],
             data: Vec::new(),
+            kmers: Vec::new(),
         }
     }
 
@@ -197,11 +203,11 @@ impl KMerMap {
         // slot to the right (offsets[k + 1] holds the count for k-mer k)
         // the unique k-mers are recomputed per sequence instead of being kept for all
         // sequences at once, as that would need to coexist in memory with the k-mer map
-        // one k-mer buffer is reused for all sequences of both passes
-        let mut kmers = Vec::new();
+        // one k-mer buffer is reused both passes across all ref sequences
+        let kmers = &mut self.kmers;
         for LabeledSequence { sequence, .. } in sequences {
-            seq_to_unique_minenc_canon_kmers_into(sequence, encoding_data, &mut kmers);
-            for &k_mer in &kmers {
+            seq_to_unique_minenc_canon_kmers_into(sequence, encoding_data, kmers);
+            for &k_mer in kmers.iter() {
                 offsets[k_mer as usize + 1] += 1;
             }
         }
@@ -224,12 +230,8 @@ impl KMerMap {
         order.sort_unstable_by_key(|&i| sorted_idx[i]);
         for i in order {
             let idx = sorted_idx[i];
-            seq_to_unique_minenc_canon_kmers_into(
-                &sequences[i].sequence,
-                encoding_data,
-                &mut kmers,
-            );
-            for &k_mer in &kmers {
+            seq_to_unique_minenc_canon_kmers_into(&sequences[i].sequence, encoding_data, kmers);
+            for &k_mer in kmers.iter() {
                 let pos = &mut offsets[k_mer as usize];
                 self.data[*pos] = idx;
                 *pos += 1;
