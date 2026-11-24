@@ -218,6 +218,8 @@ impl KMerMap {
         }
 
         self.data.clear();
+        // when dealing with GiB of data, reserving without `exact` can lead to a lot of wasted memory
+        self.data.reserve_exact(offsets[n]);
         self.data.resize(offsets[n], IndexType::default());
 
         // pass 2: fill data, recomputing the unique k-mers of each sequence,
@@ -247,13 +249,15 @@ impl KMerMap {
         if log_enabled!(Level::Debug) {
             // log the size of the k-mer map
             let offsets_size = self.offsets.capacity() * size_of::<usize>();
-            let data_size = self.data.capacity() * size_of::<IndexType>();
+            let data_len = self.data.len() * size_of::<IndexType>();
+            let data_cap = self.data.capacity() * size_of::<IndexType>();
 
             debug!(
-                "size of k-mer map: {} of offsets, {} of data, {} total",
+                "size of k-mer map: {} of offsets, {} of data ({} allocated), {} total",
                 HumanBytes(offsets_size as u64),
-                HumanBytes(data_size as u64),
-                HumanBytes((offsets_size + data_size) as u64)
+                HumanBytes(data_len as u64),
+                HumanBytes(data_cap as u64),
+                HumanBytes((offsets_size + data_cap) as u64)
             );
         }
     }
