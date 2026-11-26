@@ -4,7 +4,7 @@ use itertools::Itertools;
 use logging_timer::time;
 use statrs::function::factorial::ln_binomial;
 
-#[time("debug")]
+#[time("trace")]
 pub fn highest_hit_prob_per_reference(
     total_num_k_mers: u32,
     num_trials: usize,

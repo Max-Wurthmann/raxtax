@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use itertools::Itertools;
 use log::{log_enabled, warn};
+use logging_timer::time;
 use serde::{Deserialize, Serialize};
 
 use crate::lineage;
@@ -238,6 +239,7 @@ pub fn seq_to_unique_minenc_canon_kmers(
 
 /// Like [`seq_to_unique_minenc_canon_kmers`], but writes into `kmers` (cleared first),
 /// reusing its allocation.
+#[time("debug")]
 pub fn seq_to_unique_minenc_canon_kmers_into(
     sequence: &[u8],
     encoding_data: &KMerEncodingData,

@@ -83,7 +83,7 @@ impl<'a, 'b> Lineage<'a, 'b> {
         }
     }
 
-    #[time("debug")]
+    #[time("trace")]
     pub fn evaluate(mut self) -> (Vec<EvaluationResult<'a, 'b>>, Option<(String, f64)>) {
         self.eval_recurse(&self.tree.root, &[], &[]);
         // NOTE: This would be the correct maximum leaf confidence and ideally we would normalize with this.
